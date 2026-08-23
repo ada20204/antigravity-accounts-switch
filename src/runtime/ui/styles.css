@@ -1,0 +1,600 @@
+/* Custom confirm/alert modal — window.confirm()/alert() silently no-op inside
+   the VS Code webview sandbox (verified: confirm() always resolves false with
+   no dialog ever shown), so every confirm-gated action needs this instead. */
+.ag-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 9999999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: ag-popup-fade-in 0.12s ease;
+}
+
+.ag-confirm-box {
+  width: 320px;
+  max-width: calc(100vw - 32px);
+  background: #1e1f22;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.5);
+  padding: 16px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
+
+.ag-confirm-message {
+  font-size: 13px;
+  line-height: 1.5;
+  color: #e5e7eb;
+  white-space: pre-wrap;
+}
+
+.ag-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.ag-confirm-btn {
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: transparent;
+  color: #d1d5db;
+  transition: background 0.12s ease;
+}
+
+.ag-confirm-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.ag-confirm-btn.ag-confirm-ok {
+  background: #3b82f6;
+  border-color: #3b82f6;
+  color: #fff;
+}
+
+.ag-confirm-btn.ag-confirm-ok:hover {
+  background: #2563eb;
+}
+
+/* Non-blocking banner shown for the whole duration of a browser sign-in — the
+   user has to be able to reach Antigravity's own sign-in screen underneath it,
+   so unlike the progress overlay this must not cover the page. */
+.ag-add-banner {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 460px;
+  max-width: calc(100vw - 24px);
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  background: #1e1f22;
+  border: 1px solid rgba(96, 165, 250, 0.35);
+  border-radius: 12px;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.45);
+  padding: 14px 16px;
+  z-index: 9999998;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  animation: ag-popup-fade-in 0.16s ease;
+}
+
+.ag-add-banner-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.ag-add-banner-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e5e7eb;
+}
+
+.ag-add-banner-detail {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: #9ca3af;
+  margin-top: 4px;
+}
+
+.ag-add-banner-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+  align-self: center;
+}
+
+/* Blocking progress modal shown while an account switch completes — see
+   progressOverlay.ts for why it is normally cleared by the iframe reload
+   rather than by an explicit close. */
+.ag-progress-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 9999999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: ag-popup-fade-in 0.12s ease;
+}
+
+.ag-progress-box {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 320px;
+  max-width: calc(100vw - 32px);
+  background: #1e1f22;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.5);
+  padding: 16px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
+
+.ag-progress-spinner {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  border-top-color: #60a5fa;
+  animation: ag-spin 0.7s linear infinite;
+}
+
+@keyframes ag-spin {
+  to { transform: rotate(360deg); }
+}
+
+.ag-progress-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: #e5e7eb;
+}
+
+.ag-progress-detail {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: #9ca3af;
+  margin-top: 3px;
+}
+
+/* Small independent badge overlaid on the native profile button's corner — a
+   separate click target (never a child of the native button), so it never
+   intercepts clicks meant for the official Account/Sign Out screen. */
+.ag-profile-badge {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 2px solid #1e1f22;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #60a5fa, #a78bfa);
+  cursor: pointer;
+  z-index: 999998;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  transition: transform 0.12s ease;
+}
+
+.ag-profile-badge:hover {
+  transform: scale(1.15);
+}
+
+/* Antigravity Multi-Account Pixel-Perfect Dark Theme Popup */
+/* Anchored by its bottom edge, so the list grows UPWARD as accounts are added.
+   Without the height cap it eventually runs past the top of the viewport, and
+   `overflow: hidden` would silently clip the header rather than scroll it —
+   hence the cap plus a scrollable list section below.
+
+   Two independent caps apply, and the smaller one always wins:
+     1. this viewport cap, for short windows;
+     2. the --ag-max-rows cap on the list itself, so a tall window still never
+        shows an endless wall of accounts.
+   They compose without any JS: when the viewport cap leaves less room than
+   --ag-max-rows would need, the list (the only flex child with min-height:0)
+   shrinks below its own max-height and scrolls sooner. */
+.ag-enhancer-popup {
+  --ag-row-h: 39px;
+  --ag-row-gap: 2px;
+  --ag-list-pad: 12px;
+  --ag-max-rows: 10;
+
+  position: fixed;
+  bottom: 64px;
+  left: 12px;
+  width: 296px;
+  max-height: calc(100vh - 96px);
+  display: flex;
+  flex-direction: column;
+  background: #1e1f22;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.04);
+  color: #d1d5db;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font-size: 13px;
+  z-index: 999999;
+  overflow: hidden;
+  user-select: none;
+  animation: ag-popup-fade-in 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes ag-popup-fade-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.ag-enhancer-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+}
+
+/* Deterministic color+initial avatar — there's no real per-account profile
+   picture available (agent-hub-accounts' route data has no avatar field),
+   and showing the exact same stock photo for every account was actively
+   misleading (all three accounts looked like the same person). */
+.ag-enhancer-avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.92);
+  text-transform: uppercase;
+}
+
+.ag-enhancer-user-name {
+  font-weight: 500;
+  font-size: 13px;
+  color: #f3f4f6;
+}
+
+.ag-enhancer-summary-card {
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.015);
+  flex-shrink: 0;
+}
+
+.ag-enhancer-summary-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ag-enhancer-summary-icon {
+  width: 16px;
+  height: 16px;
+  color: #9ca3af;
+}
+
+.ag-enhancer-summary-title {
+  font-weight: 500;
+  font-size: 12.5px;
+  color: #e5e7eb;
+  line-height: 1.25;
+}
+
+.ag-enhancer-summary-sub {
+  font-size: 11px;
+  color: #9ca3af;
+  margin-top: 1px;
+}
+
+.ag-enhancer-total-badge {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #f3f4f6;
+}
+
+/* The only part allowed to scroll — header, summary and actions stay pinned.
+   min-height:0 is required for a flex child to be allowed to shrink below its
+   content height, which is what makes overflow-y actually engage here.
+   max-height caps it at --ag-max-rows rows (N rows + N-1 gaps + padding);
+   box-sizing keeps that arithmetic honest by counting the padding inside it. */
+.ag-enhancer-subs-list {
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ag-row-gap);
+  overflow-y: auto;
+  min-height: 0;
+  box-sizing: border-box;
+  max-height: calc(
+    var(--ag-max-rows) * var(--ag-row-h)
+    + (var(--ag-max-rows) - 1) * var(--ag-row-gap)
+    + var(--ag-list-pad)
+  );
+}
+
+/* flex-shrink:0 stops the rows themselves from being squashed when the list is
+   compressed by the popup's viewport cap — the list must scroll instead.
+   The row height is what --ag-max-rows arithmetic assumes, so nothing inside
+   may wrap to a second line (see the ellipsis rules below). */
+.ag-enhancer-sub-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+  flex-shrink: 0;
+}
+
+.ag-enhancer-sub-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.ag-enhancer-sub-item.active {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.ag-enhancer-sub-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0; /* lets the name below actually ellipsis instead of overflowing */
+}
+
+.ag-dot {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.ag-dot-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.92);
+  text-transform: uppercase;
+}
+
+.ag-enhancer-sub-info {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+  min-width: 0;
+}
+
+/* Long account names must truncate, not wrap: a wrapped row is taller than
+   --ag-row-h, which would make the "10 rows" cap show fewer than 10. */
+.ag-enhancer-sub-name {
+  font-weight: 500;
+  font-size: 12.5px;
+  color: #e5e7eb;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-enhancer-sub-dots {
+  font-size: 9px;
+  letter-spacing: 2px;
+  color: #6b7280;
+  margin-top: 2px;
+}
+
+.ag-enhancer-empty {
+  padding: 12px 10px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: #9ca3af;
+  text-align: center;
+}
+
+.ag-enhancer-sub-percent {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #d1d5db;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.ag-enhancer-actions {
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 5px 6px;
+  flex-shrink: 0;
+}
+
+.ag-enhancer-action-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  background: transparent;
+  color: #d1d5db;
+  font-size: 12.5px;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s;
+}
+
+.ag-enhancer-action-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+}
+
+/* Settings page "Connected Subscriptions" card — tokens taken from the live
+   official Models & Usage page (border-radius 12px, transparent bg + faint
+   border rather than a filled panel, VS Code theme vars for text/accent). */
+.ag-settings-custom-card {
+  margin: 4px 0 20px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+  background: transparent;
+  font-family: -apple-system, "system-ui", sans-serif;
+}
+
+.ag-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.ag-card-title-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ag-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--vscode-foreground, #bfbfbf);
+}
+
+.ag-card-badge {
+  font-size: 11px;
+  font-weight: 500;
+  color: #4ade80;
+  background: rgba(74, 222, 128, 0.12);
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.ag-card-add-btn {
+  font-size: 12px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: transparent;
+  color: var(--vscode-foreground, #bfbfbf);
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.ag-card-add-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.ag-card-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ag-sub-box {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.ag-sub-box-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ag-sub-box-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ag-sub-box:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.ag-sub-box.active {
+  border-color: rgba(74, 222, 128, 0.35);
+}
+
+.ag-sub-box-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--vscode-foreground, #bfbfbf);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-sub-box-val {
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+.ag-sub-box-mask {
+  font-size: 11px;
+  color: #6b7280;
+  margin-top: 4px;
+}
+
+.ag-nav-custom-item {
+  display: flex;
+  align-items: center;
+  padding: 6px 10px;
+  font-size: 13px;
+  color: var(--vscode-foreground, #bfbfbf);
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background 0.12s ease;
+}
+
+.ag-nav-custom-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* Quota ring — same viewBox/structure as the official
+   [data-testid="quota-progress-circle"] rings so ours reads as native. */
+.ag-quota-ring {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  transform: rotate(-90deg);
+}
+
+.ag-quota-ring-track {
+  fill: transparent;
+  stroke: currentColor;
+  stroke-opacity: 0.4;
+  stroke-width: 3;
+  color: #6b7280;
+}
+
+.ag-quota-ring-value {
+  fill: transparent;
+  stroke-width: 4;
+  stroke-linecap: butt;
+}
