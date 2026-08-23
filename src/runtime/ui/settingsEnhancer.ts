@@ -1,14 +1,23 @@
 import { AccountStore } from '../services/accountStore';
 import { SemanticLocator } from '../adapters/semanticLocator';
 import { showConfirm, showAlert } from './confirmDialog';
-
-// Switching Settings tabs re-renders the page and takes our card with it, so
-// the next tick builds a fresh one. The listener bound to the previous card
-// would otherwise survive and keep re-rendering a detached node on every
-// ag-account-changed — one more leaked listener per tab switch.
-let cardListenerAbort: AbortController | null = null;
+import { bindUntilRemoved, shouldSkipRender, renderOrDefer } from './renderGuard';
 
 export function injectSettingsEnhancements() {
+  // Opportunistic: only present on the Settings → General sub-page, and only
+  // reflects whichever account is active right now. Cheap to check every
+  // tick — findAccountPlanLabel() is a single DOM scan — and reportPlan()
+  // is only called when the label actually changed, so an account the user
+  // never opens this sub-page for just stays 'Unknown' until they do. See
+  // docs/DECISIONS.md, "账号等级(Plan)".
+  const planLabel = SemanticLocator.findAccountPlanLabel();
+  if (planLabel) {
+    const active = AccountStore.getAccounts().find(a => a.isActive);
+    if (active && active.plan !== planLabel) {
+      AccountStore.reportPlan(active.id, planLabel);
+    }
+  }
+
   // Lives as the last child of the native quota container, so it sits below
   // every native quota section and inherits their spacing. Deliberately has NO
   // fallback location: an earlier version fell back to "just under the page
@@ -25,20 +34,22 @@ export function injectSettingsEnhancements() {
       container.appendChild(card);
       // Attached once here, not inside renderSettingsCard() — that runs on
       // every 1.5s tick and would pile up a new listener each time otherwise.
-      cardListenerAbort?.abort();
-      cardListenerAbort = new AbortController();
+      // Switching Settings tabs re-renders the page and takes our card with
+      // it; bindUntilRemoved rebinding for the same element id here (a fresh
+      // card built next tick) automatically retires the old listener instead
+      // of leaking it.
       const cardRef = card;
-      window.addEventListener(
-        'ag-account-changed',
-        () => renderSettingsCard(cardRef),
-        { signal: cardListenerAbort.signal }
-      );
+      bindUntilRemoved(cardRef, 'ag-account-changed', () => renderOrDefer(() => renderSettingsCard(cardRef)));
     } else if (card.parentElement !== container || container.lastElementChild !== card) {
       // Re-append only when it isn't already in place — appendChild always
       // mutates the DOM, and doing that every tick would fight the page.
       container.appendChild(card);
     }
-    renderSettingsCard(card);
+    // This whole function runs every 1.5s (anchoring self-correction) — the
+    // render itself must go through renderOrDefer so a tick that lands mid
+    // mousedown-to-click on a Switch/Remove row doesn't destroy the row the
+    // browser is about to dispatch that click on.
+    renderOrDefer(() => renderSettingsCard(card!));
   }
 
   // No sidebar nav entry — see docs/DECISIONS.md, "Settings 卡片的几个小决策".
@@ -64,10 +75,12 @@ function renderQuotaRing(percent: number, color: string): string {
 // used to re-render unconditionally — rewriting innerHTML four times a second-ish
 // under the user's cursor. A click landing between mousedown and mouseup on a
 // Switch/Remove link was simply lost, because the element it started on had been
-// replaced. Re-render only when the rendered data actually differs; explicit
-// call sites that change non-data state (button labels) pass force.
-const RENDER_SIGNATURE_KEY = '__agRenderSignature';
-
+// replaced. Re-render only when the rendered data actually differs (renderGuard's
+// shouldSkipRender) — combined with renderOrDefer at both call sites (above, and
+// the ag-account-changed listener) for the cases a signature change alone can't
+// save: real data landing mid-gesture. `force` is for the one remaining case
+// that's neither — resetting a UI-only artifact (the refresh button's label)
+// that the signature check has no way to know needs resetting.
 function renderSettingsCard(card: HTMLElement, force = false) {
   const accounts = AccountStore.getAccounts();
   const { averagePercent, count } = AccountStore.getTotalQuota();
@@ -77,8 +90,7 @@ function renderSettingsCard(card: HTMLElement, force = false) {
     count,
     accounts.map(a => [a.id, a.name, a.quotaPercent, a.isActive, a.issue ?? '', a.geminiWeekly ?? '', a.gemini5h ?? '']),
   ]);
-  if (!force && (card as any)[RENDER_SIGNATURE_KEY] === signature) return;
-  (card as any)[RENDER_SIGNATURE_KEY] = signature;
+  if (shouldSkipRender(card, signature, force)) return;
 
   card.innerHTML = `
     <div class="ag-card-header">
@@ -135,9 +147,15 @@ function renderSettingsCard(card: HTMLElement, force = false) {
       if (id) {
         el.style.opacity = '0.5';
         await AccountStore.confirmAndSwitch(id);
-        // Forced: the row's inline opacity must be cleared even when the
-        // switch changed nothing (cancelled, or already the active account).
-        renderSettingsCard(card, true);
+        // Direct single-element reset, not a full-card force-rebuild — same
+        // fix accountPopup.ts already used for the identical scenario. Must
+        // run even when the switch changed nothing (cancelled, or already the
+        // active account), which is why it's unconditional rather than folded
+        // into the data-driven render below.
+        el.style.opacity = '';
+        // Still re-render normally afterward in case the switch itself did
+        // change the data (a real switch changes which account is ACTIVE).
+        renderSettingsCard(card);
       }
     });
   });

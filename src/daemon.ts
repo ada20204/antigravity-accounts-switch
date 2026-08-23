@@ -7,23 +7,11 @@ import { promisify } from 'util';
 import { startCdpInjectorLoop } from './cdpInjector';
 import { restartAntigravityHub, startHubReaperLoop } from './hubRestart';
 import { log, LOG_FILE } from './logger';
+import { runCli, runCliJson, isKeychainActiveAvailable, detachActiveKeychainLogin, AGENT_HUB_DIST } from './cliRunner';
+import { readJsonBody, respondError, isAllowedOrigin } from './httpUtils';
 
 const execAsync = promisify(exec);
 const PORT = 63820;
-
-const AGENT_HUB_DIST = '/Users/developer/work/agent-hub-accounts/dist';
-const AGENT_HUB_CLI = `${AGENT_HUB_DIST}/cli.js`;
-
-// Live "is anyone signed in" check. Deliberately not derived from `route`,
-// which serves cached state and keeps reporting the last account as active
-// long after the login is gone — observed reporting active while the Keychain
-// slot did not exist at all. activeAvailable() only checks that the slot is
-// there (no `-w`), so it reads nothing secret and never prompts.
-const ACTIVE_AVAILABLE_SNIPPET = [
-  `const { settings } = require("${AGENT_HUB_DIST}/cli/options.js");`,
-  `const { MacKeychain } = require("${AGENT_HUB_DIST}/keychain.js");`,
-  'process.stdout.write(String(new MacKeychain(settings().credentialsDir).activeAvailable()));',
-].join('');
 
 // Saved credential profiles, keyed by file name. Small JSON files, and only
 // read around a capture, so holding them in memory briefly is cheap.
@@ -65,49 +53,44 @@ function restoreProfile(accountId: string, snapshot: Map<string, Buffer>): boole
 // Which saved account the live credential actually belongs to, or null if it
 // belongs to none of them. `--verify` byte-compares the Keychain against every
 // saved profile; plain `route`/`current` answer from cache and have been seen
-// naming an account as active while the Keychain held a different one.
+// naming an account as active while the Keychain held a different one. This is
+// the single chokepoint every "is this account currently active" decision in
+// this file should go through — a cached-route shortcut here is exactly what
+// destroyed an account once already (see docs/DECISIONS.md).
 async function resolveActiveAccountId(): Promise<string | null> {
   try {
-    const { stdout } = await execAsync(`node ${AGENT_HUB_CLI} route --verify --json`);
-    return (JSON.parse(stdout).accounts || []).find((a: any) => a.active)?.account_id ?? null;
+    const verified = await runCliJson(['route', '--verify', '--json']);
+    return (verified.accounts || []).find((a: any) => a.active)?.account_id ?? null;
   } catch {
     return null;
   }
 }
-
-async function isSignedOut(): Promise<boolean> {
-  try {
-    const { stdout } = await execAsync(`node -e '${ACTIVE_AVAILABLE_SNIPPET}'`);
-    return stdout.trim() !== 'true';
-  } catch {
-    return false; // can't tell — don't cry wolf
-  }
-}
-
-// Reuses agent-hub-accounts' own MacKeychain.detachActive() rather than
-// reimplementing it here. Duplicating another project's Keychain service and
-// account names in this repo would mean two places to keep in sync, and this
-// way their error handling and any future changes come along for free.
-const DETACH_ACTIVE_SNIPPET = [
-  `const { settings } = require("${AGENT_HUB_DIST}/cli/options.js");`,
-  `const { MacKeychain } = require("${AGENT_HUB_DIST}/keychain.js");`,
-  'new MacKeychain(settings().credentialsDir).detachActive();',
-].join('');
 
 // What the running hub actually authenticates with. NOT the Keychain: a hub
 // started with no Keychain access at all (an SSH session, verified: read
 // returns exit 36) still comes up fully authenticated, because it reads this
 // file. The Keychain slot is what `agy` the CLI and agent-hub-accounts use.
 // Signing the hub out therefore means moving this aside, not just detaching
-// the Keychain entry. Renamed in place so the restore is a same-directory
-// rename with no cross-device copy.
+// the Keychain entry.
 const HUB_TOKEN_FILE = path.join(os.homedir(), '.gemini', 'jetski-standalone-oauth-token');
 
+// --- Add-account flow state ---
+//
 // Survives the webview reload that the sign-out step triggers, which is why it
 // lives here rather than in page state — and persisted to disk, because it also
 // has to survive this daemon restarting. That is not hypothetical: a restart
 // mid-flow drops the flag, the banner disappears, and a user who is currently
 // signed out has no button left to finish or cancel with.
+//
+// lastAddedAccountId is persisted the same way for the same reason: it used to
+// be in-memory only ("a one-shot notification, not state worth persisting"),
+// but a daemon restart landing in the gap between report-identity setting it
+// and the frontend's next status poll reading it meant the switch itself went
+// through (durable via the CLI) while the "Added X" confirmation silently
+// never fired — no error, just a flow that completes without ever telling the
+// user it succeeded. Both halves of this flow's state now follow the same
+// persist-to-disk rule instead of that being a per-field judgment call.
+//
 // knownAccountIds is the whole point of distinguishing "a new account signed
 // in" from "the active credential changed". Comparing against backupAccountId
 // alone is not enough: switching to any OTHER already-saved account also
@@ -115,6 +98,7 @@ const HUB_TOKEN_FILE = path.join(os.homedir(), '.gemini', 'jetski-standalone-oau
 // along.
 interface PendingAdd { backupAccountId: string; startedAt: number; knownAccountIds: string[] }
 const PENDING_ADD_FILE = path.join(os.tmpdir(), 'antigravity-accounts-enhancer-pending-add.json');
+const LAST_ADDED_FILE = path.join(os.tmpdir(), 'antigravity-accounts-enhancer-last-added.json');
 
 function loadPendingAdd(): PendingAdd | null {
   try {
@@ -138,12 +122,69 @@ function setPendingAdd(value: PendingAdd | null): void {
   }
 }
 
+function loadLastAddedAccountId(): string | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(LAST_ADDED_FILE, 'utf8'));
+    return typeof parsed?.accountId === 'string' ? parsed.accountId : null;
+  } catch {
+    return null;
+  }
+}
+
+function setLastAddedAccountId(value: string | null): void {
+  lastAddedAccountId = value;
+  try {
+    if (value) fs.writeFileSync(LAST_ADDED_FILE, JSON.stringify({ accountId: value }));
+    else fs.rmSync(LAST_ADDED_FILE, { force: true });
+  } catch (e: any) {
+    log('ADD_ACCOUNT', 'could not persist last-added notification', e.message);
+  }
+}
+
 let pendingAdd: PendingAdd | null = loadPendingAdd();
 if (pendingAdd) log('ADD_ACCOUNT', 'resumed pending sign-in from previous daemon run', pendingAdd);
 
-// Read once by the banner so it can confirm which account was added, then
-// cleared — it is a one-shot notification, not state worth persisting.
-let lastAddedAccountId: string | null = null;
+let lastAddedAccountId: string | null = loadLastAddedAccountId();
+
+// Plan/tier ("Your Plan: ...") only exists in Antigravity's own Settings →
+// Account page, and only for whichever account is CURRENTLY active — there is
+// no CLI field for it (checked `route --json`: no plan/tier/subscription key
+// anywhere in the schema). Same shape as the identity problem this project
+// already solved once: read it from the real DOM instead of guessing, and
+// persist it here so a later /api/accounts response can still show the plan
+// for an account that isn't the active one right now. See docs/DECISIONS.md,
+// "账号等级(Plan)".
+const PLAN_STORE_FILE = path.join(os.tmpdir(), 'antigravity-accounts-enhancer-plans.json');
+
+function loadKnownPlans(): Record<string, string> {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(PLAN_STORE_FILE, 'utf8'));
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveKnownPlans(): void {
+  try {
+    fs.writeFileSync(PLAN_STORE_FILE, JSON.stringify(knownPlans));
+  } catch (e: any) {
+    log('PLAN', 'could not persist known plans', e.message);
+  }
+}
+
+const knownPlans: Record<string, string> = loadKnownPlans();
+
+// Re-entrancy guard for /api/add-account/begin. Separate from `pendingAdd`
+// on purpose: pendingAdd isn't set until after several awaits (a `--verify`
+// call, an optional connect, a full hub restart), so checking only pendingAdd
+// left a window where two begin() calls fired close together (a UI
+// double-fire, or a second request racing in) could both read pendingAdd as
+// null and both proceed — the second call's setPendingAdd() would then
+// silently overwrite the first's backupAccountId, so a later Cancel would
+// restore the wrong account. This flag is checked and set synchronously, with
+// no `await` in between, so no other request's handler can interleave.
+let addAccountBeginInFlight = false;
 
 // There used to be a daemon-side poller here that auto-captured a new sign-in
 // by calling bare `connect` (no id) every 2s and comparing the guessed id
@@ -169,18 +210,28 @@ let lastAddedAccountId: string | null = null;
 
 log('BOOT', `Daemon starting, log file at ${LOG_FILE}`);
 
-// Origin whitelist, not '*' — see docs/DECISIONS.md, "CORS 白名单策略".
-function isAllowedOrigin(origin: string | undefined): boolean {
-  if (!origin) return false;
-  if (origin.startsWith('vscode-webview://')) return true;
-  if (/^http:\/\/127\.0\.0\.1:\d+$/.test(origin)) return true;
-  return false;
-}
-
 // HTTP Server for Webview bridge
 const server = http.createServer(async (req, res) => {
   const origin = req.headers.origin;
   const allowed = isAllowedOrigin(origin);
+
+  // Enforced, not just reflected. Setting Access-Control-Allow-Origin alone
+  // only controls whether a browser lets the calling page's JS *read* the
+  // response — it does nothing to stop the request from being *sent* and
+  // executed. Several of this daemon's own endpoints are "simple" requests
+  // (no body, no custom Content-Type — e.g. /api/login) that never trigger a
+  // CORS preflight at all, so without this check any web page open in any
+  // browser tab on the machine could already sign the user out, kill/restart
+  // the hub, or cycle the active login before a browser-side check would ever
+  // run. A present-but-disallowed Origin is rejected outright; a missing one
+  // (curl, our own Terminal script) is trusted local access, matching this
+  // daemon's existing threat model — see docs/DECISIONS.md.
+  if (origin && !allowed) {
+    log('REQ', req.method, req.url, `origin=${origin}`, 'REJECTED (origin not in allow-list)');
+    respondError(res, 403, 'Origin not allowed');
+    return;
+  }
+
   if (allowed) {
     res.setHeader('Access-Control-Allow-Origin', origin!);
   }
@@ -198,66 +249,82 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url || '/', `http://127.0.0.1:${PORT}`);
 
   if (url.pathname === '/api/log' && req.method === 'POST') {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', () => {
-      try {
-        const parsed = JSON.parse(body);
-        log('FRONTEND', parsed.level || 'info', parsed.message, parsed.data ?? '');
-      } catch {
-        log('FRONTEND', 'unparseable', body);
-      }
-      res.writeHead(204);
-      res.end();
-    });
+    try {
+      const parsed = await readJsonBody(req);
+      log('FRONTEND', parsed.level || 'info', parsed.message, parsed.data ?? '');
+    } catch {
+      log('FRONTEND', 'unparseable body');
+    }
+    res.writeHead(204);
+    res.end();
     return;
   }
 
   try {
     if (url.pathname === '/api/accounts' && req.method === 'GET') {
-      const { stdout } = await execAsync(`node ${AGENT_HUB_CLI} route --json`);
+      const stdout = await runCli(['route', '--json']);
+      const parsed = JSON.parse(stdout);
+      for (const acc of parsed.accounts ?? []) {
+        acc.plan = knownPlans[acc.account_id] ?? null;
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(stdout);
+      res.end(JSON.stringify(parsed));
+      return;
+    }
+
+    // Frontend-reported only — see the comment on knownPlans above for why
+    // this can't come from the CLI. Trusts the caller the same way
+    // report-identity does: it's reporting what its own Account panel DOM
+    // just showed for whichever account is active right now, not guessing
+    // someone else's.
+    if (url.pathname === '/api/report-plan' && req.method === 'POST') {
+      const { accountId, label } = await readJsonBody(req);
+      if (!accountId || !label) {
+        respondError(res, 400, 'Missing accountId or label');
+        return;
+      }
+      if (knownPlans[accountId] !== label) {
+        knownPlans[accountId] = label;
+        saveKnownPlans();
+        log('PLAN', 'observed', accountId, '→', label);
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
       return;
     }
 
     if (url.pathname === '/api/switch' && req.method === 'POST') {
-      let body = '';
-      req.on('data', chunk => body += chunk);
-      req.on('end', async () => {
-        try {
-          const { accountId } = JSON.parse(body);
-          if (!accountId) throw new Error('Missing accountId');
-          log('SWITCH', 'requested', accountId);
+      try {
+        const { accountId } = await readJsonBody(req);
+        if (!accountId) throw new Error('Missing accountId');
+        log('SWITCH', 'requested', accountId);
 
-          const tSwitchStart = Date.now();
-          const { stdout } = await execAsync(`node ${AGENT_HUB_CLI} switch "${accountId}" --json`);
-          const cliMs = Date.now() - tSwitchStart;
-          log('SWITCH', 'cli succeeded', accountId, stdout.slice(0, 300));
+        const tSwitchStart = Date.now();
+        const stdout = await runCli(['switch', accountId, '--json']);
+        const cliMs = Date.now() - tSwitchStart;
+        log('SWITCH', 'cli succeeded', accountId, stdout.slice(0, 300));
 
-          // Respond before restarting the hub — restarting reloads the calling
-          // page itself; responding after would race the reload. See
-          // docs/DECISIONS.md, "Hub 重启:为什么改成整窗口 reload".
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(stdout);
+        // Respond before restarting the hub — restarting reloads the calling
+        // page itself; responding after would race the reload. See
+        // docs/DECISIONS.md, "Hub 重启:为什么改成整窗口 reload".
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(stdout);
 
-          const hubRestart = await restartAntigravityHub();
-          log('SWITCH', 'hub restart result', hubRestart);
-          log('TIMING', 'switch', accountId, {
-            strategy: hubRestart.strategy,
-            cliMs,
-            hubStopMs: hubRestart.timingMs.stopHub,
-            hubHealthyMs: hubRestart.timingMs.hubHealthy,
-            reloadMs: hubRestart.timingMs.reload,
-            hubRestartTotalMs: hubRestart.timingMs.total,
-            grandTotalMs: cliMs + hubRestart.timingMs.total,
-          });
-        } catch (e: any) {
-          log('SWITCH', 'FAILED', e.message);
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: e.message }));
-        }
-      });
+        const hubRestart = await restartAntigravityHub();
+        log('SWITCH', 'hub restart result', hubRestart);
+        log('TIMING', 'switch', accountId, {
+          strategy: hubRestart.strategy,
+          cliMs,
+          hubStopMs: hubRestart.timingMs.stopHub,
+          hubHealthyMs: hubRestart.timingMs.hubHealthy,
+          reloadMs: hubRestart.timingMs.reload,
+          hubRestartTotalMs: hubRestart.timingMs.total,
+          grandTotalMs: cliMs + hubRestart.timingMs.total,
+        });
+      } catch (e: any) {
+        log('SWITCH', 'FAILED', e.message);
+        respondError(res, 500, e.message);
+      }
       return;
     }
 
@@ -275,59 +342,13 @@ const server = http.createServer(async (req, res) => {
       // out of match within minutes of normal use — meaning login fails with
       // "current agy login is not safely saved" far more often than not.
       // Re-capturing first is exactly what that error tells you to do.
-      const script = [
-        '#!/bin/bash',
-        'set -o pipefail',
-        'echo "=== Add a new Antigravity account ==="',
-        'echo',
-        'echo "Step 1/3: re-saving your current account..."',
-        'echo "(Antigravity refreshes its token in the background, so the saved copy"',
-        'echo " drifts out of sync. Sign-in refuses to start until it matches again.)"',
-        'echo',
-        `node ${AGENT_HUB_CLI} connect`,
-        'if [ $? -ne 0 ]; then',
-        '  echo',
-        '  echo "Could not re-save the current account, so sign-in was not started."',
-        '  echo "Nothing was changed."',
-        '  echo "Press Return to close this window."',
-        '  read -r _',
-        '  exit 1',
-        'fi',
-        'echo',
-        'echo "Step 2/3: sign in with the NEW Google account..."',
-        'echo',
-        `node ${AGENT_HUB_CLI} login`,
-        'if [ $? -ne 0 ]; then',
-        '  echo',
-        '  echo "Sign-in did not complete. Your previous account was restored."',
-        '  echo "Press Return to close this window."',
-        '  read -r _',
-        '  exit 1',
-        'fi',
-        'echo',
-        'echo "Step 3/3: saving the new account..."',
-        `node ${AGENT_HUB_CLI} connect`,
-        'if [ $? -eq 0 ]; then',
-        '  echo',
-        '  echo "Applying the new account to the running Antigravity session..."',
-        // Without this the sign-in leaves the new account active in the
-        // Keychain while the running hub keeps serving the old one.
-        `  curl -s -X POST http://127.0.0.1:${PORT}/api/hub-restart >/dev/null 2>&1 || echo "  (could not reach the accounts daemon — restart VS Code to apply)"`,
-        '  echo',
-        '  echo "Done. The new account is now available in Antigravity."',
-        '  echo',
-        `  node ${AGENT_HUB_CLI} list`,
-        'else',
-        '  echo',
-        '  echo "Sign-in worked but saving it failed. Run: agent-hub-accounts connect"',
-        'fi',
-        'echo',
-        'echo "Press Return to close this window."',
-        'read -r _',
-      ].join('\n');
-
+      //
+      // No dynamic account id is interpolated into this script — every step
+      // runs `connect`/`login` bare — so unlike the JSON API handlers above it
+      // never needed the execFile-based injection fix; a plain shell string is
+      // fine here.
       const scriptPath = path.join(os.tmpdir(), `ag-enhancer-login-${Date.now()}.sh`);
-      fs.writeFileSync(scriptPath, script, { mode: 0o700 });
+      fs.writeFileSync(scriptPath, buildLoginTerminalScript(), { mode: 0o700 });
 
       // Two separate -e args so the window is focused as well as opened.
       await execAsync(
@@ -342,75 +363,65 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === '/api/connect' && req.method === 'POST') {
-      let body = '';
-      req.on('data', chunk => body += chunk);
-      req.on('end', async () => {
-        try {
-          const { accountId } = JSON.parse(body || '{}');
+      try {
+        const { accountId } = await readJsonBody(req);
 
-          // Guarded the same way as begin(): without an explicit id, `connect`
-          // names the account from recent agy logs and files the live
-          // credential under whatever it finds. Calling this endpoint with no
-          // id destroyed a working account's saved credential once already —
-          // it captured the account that had just been switched AWAY from, and
-          // overwrote that account's profile with the new one's token.
-          const targetId = accountId || await resolveActiveAccountId();
-          if (!targetId) {
-            res.writeHead(409, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({
-              error: 'The current login does not match any saved account, so it cannot be captured without an explicit accountId.',
-              code: 'ACCOUNT_UNIDENTIFIED',
-            }));
-            return;
-          }
-
-          const { stdout } = await execAsync(`node ${AGENT_HUB_CLI} connect "${targetId}" --json`);
-          log('CONNECT', 'captured', targetId);
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(stdout);
-        } catch (e: any) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: e.message }));
+        // Guarded the same way as begin(): without an explicit id, `connect`
+        // names the account from recent agy logs and files the live
+        // credential under whatever it finds. Calling this endpoint with no
+        // id destroyed a working account's saved credential once already —
+        // it captured the account that had just been switched AWAY from, and
+        // overwrote that account's profile with the new one's token.
+        const targetId = accountId || await resolveActiveAccountId();
+        if (!targetId) {
+          respondError(
+            res, 409,
+            'The current login does not match any saved account, so it cannot be captured without an explicit accountId.',
+            'ACCOUNT_UNIDENTIFIED'
+          );
+          return;
         }
-      });
+
+        const stdout = await runCli(['connect', targetId, '--json']);
+        log('CONNECT', 'captured', targetId);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(stdout);
+      } catch (e: any) {
+        respondError(res, 500, e.message);
+      }
       return;
     }
 
     if (url.pathname === '/api/remove' && req.method === 'POST') {
-      let body = '';
-      req.on('data', chunk => body += chunk);
-      req.on('end', async () => {
-        try {
-          const { accountId } = JSON.parse(body);
-          if (!accountId) throw new Error('Missing accountId');
+      try {
+        const { accountId } = await readJsonBody(req);
+        if (!accountId) throw new Error('Missing accountId');
 
-          // Removing the account that's currently signed in would delete the
-          // stored credential out from under the running hub, leaving a live
-          // session whose account no longer exists in the registry. Make the
-          // caller switch away first rather than landing in that state.
-          const { stdout: routeOut } = await execAsync(`node ${AGENT_HUB_CLI} route --json`);
-          const active = (JSON.parse(routeOut).accounts || []).find((a: any) => a.active);
-          if (active && active.account_id === accountId) {
-            log('REMOVE', 'refused: account is currently active', accountId);
-            res.writeHead(409, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({
-              error: 'Cannot remove the account that is currently signed in. Switch to another account first.',
-              code: 'ACCOUNT_ACTIVE',
-            }));
-            return;
-          }
-
-          log('REMOVE', 'requested', accountId);
-          const { stdout } = await execAsync(`node ${AGENT_HUB_CLI} remove "${accountId}" --confirm "${accountId}" --json`);
-          log('REMOVE', 'succeeded', accountId, stdout.slice(0, 200));
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(stdout);
-        } catch (e: any) {
-          log('REMOVE', 'FAILED', e.message);
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: e.message }));
+        // Removing the account that's currently signed in would delete the
+        // stored credential out from under the running hub, leaving a live
+        // session whose account no longer exists in the registry. Goes through
+        // the same --verify chokepoint as begin()/connect() — a plain cached
+        // `route` read here is exactly the bug class that already destroyed an
+        // account (see docs/DECISIONS.md): the hub rotates its OAuth token into
+        // the shared Keychain slot on its own schedule, so cached "active" can
+        // report the OLD account while the Keychain already holds a different
+        // one's live credential.
+        const activeId = await resolveActiveAccountId();
+        if (activeId && activeId === accountId) {
+          log('REMOVE', 'refused: account is currently active', accountId);
+          respondError(res, 409, 'Cannot remove the account that is currently signed in. Switch to another account first.', 'ACCOUNT_ACTIVE');
+          return;
         }
-      });
+
+        log('REMOVE', 'requested', accountId);
+        const stdout = await runCli(['remove', accountId, '--confirm', accountId, '--json']);
+        log('REMOVE', 'succeeded', accountId, stdout.slice(0, 200));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(stdout);
+      } catch (e: any) {
+        log('REMOVE', 'FAILED', e.message);
+        respondError(res, 500, e.message);
+      }
       return;
     }
 
@@ -427,9 +438,12 @@ const server = http.createServer(async (req, res) => {
     // untouched, so `switch <backup>` always restores it. begin() refuses to
     // run unless that backup was just proven to exist.
     if (url.pathname === '/api/add-account/begin' && req.method === 'POST') {
+      if (pendingAdd || addAccountBeginInFlight) {
+        respondError(res, 409, 'An account sign-in is already in progress.');
+        return;
+      }
+      addAccountBeginInFlight = true; // set synchronously — see the flag's own comment
       try {
-        if (pendingAdd) throw new Error('An account sign-in is already in progress.');
-
         // Capture first: this both refreshes a drifted credential and proves we
         // can get back. Everything after this point is reversible.
         // `--verify` byte-compares the live Keychain against every saved
@@ -437,10 +451,10 @@ const server = http.createServer(async (req, res) => {
         // provably belongs to. Plain `route`/`current` answer from cache and
         // have been seen naming an account active while the Keychain held a
         // different credential entirely.
-        const { stdout: verifyOut } = await execAsync(`node ${AGENT_HUB_CLI} route --verify --json`);
-        const verified = JSON.parse(verifyOut).accounts || [];
-        const knownAccountIds: string[] = verified.map((a: any) => a.account_id);
-        const exactMatch: string | undefined = verified.find((a: any) => a.active)?.account_id;
+        const verified = await runCliJson(['route', '--verify', '--json']);
+        const verifiedAccounts = verified.accounts || [];
+        const knownAccountIds: string[] = verifiedAccounts.map((a: any) => a.account_id);
+        const exactMatch: string | undefined = verifiedAccounts.find((a: any) => a.active)?.account_id;
 
         if (knownAccountIds.length === 0) {
           throw new Error('There are no saved accounts to fall back to, so signing out would leave you with no way back.');
@@ -457,7 +471,7 @@ const server = http.createServer(async (req, res) => {
         // credential anyway: `cancel` runs `switch <id>`, which activates the
         // saved profile. A slightly older saved token still works.
         if (exactMatch) {
-          await execAsync(`node ${AGENT_HUB_CLI} connect "${exactMatch}" --json`);
+          await runCli(['connect', exactMatch, '--json']);
           log('ADD_ACCOUNT', 'refreshed backup for', exactMatch);
         } else {
           log('ADD_ACCOUNT', 'live credential matches no saved profile (token likely rotated); keeping existing backup');
@@ -471,8 +485,8 @@ const server = http.createServer(async (req, res) => {
         if (exactMatch) {
           backupAccountId = exactMatch;
         } else {
-          const { stdout: currentOut } = await execAsync(`node ${AGENT_HUB_CLI} current --json`);
-          const lastActivated: string | undefined = (JSON.parse(currentOut).accounts || [])[0]?.account_id;
+          const current = await runCliJson(['current', '--json']);
+          const lastActivated: string | undefined = (current.accounts || [])[0]?.account_id;
           backupAccountId = lastActivated && knownAccountIds.includes(lastActivated)
             ? lastActivated
             : knownAccountIds[0];
@@ -493,19 +507,34 @@ const server = http.createServer(async (req, res) => {
             fs.rmSync(HUB_TOKEN_FILE);
             log('ADD_ACCOUNT', 'cleared cached hub session');
           }
-          await execAsync(`node -e '${DETACH_ACTIVE_SNIPPET}'`);
+          await detachActiveKeychainLogin();
           log('ADD_ACCOUNT', 'detached active login (local only, not revoked)');
-        });
+        }, { reloadStrategy: 'window' });
+
+        log('ADD_ACCOUNT', 'hub restarted into signed-out state', restart);
+
+        if (restart.onStoppedError) {
+          // The hub is alive again (restartAntigravityHub never leaves it
+          // dead over this), but we don't actually know whether the sign-out
+          // took effect — reporting success here would be exactly the kind
+          // of false "nothing changed" this is meant to avoid in the other
+          // direction. Do not set pendingAdd: there is nothing to cancel back
+          // from if the user was never signed out.
+          throw new Error(
+            `Hub restarted, but clearing the current login may have failed (${restart.onStoppedError}). ` +
+            `Check whether Antigravity is actually signed out before trying again.`
+          );
+        }
 
         setPendingAdd({ backupAccountId, startedAt: Date.now(), knownAccountIds });
-        log('ADD_ACCOUNT', 'hub restarted into signed-out state', restart);
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, backupAccountId }));
       } catch (e: any) {
         log('ADD_ACCOUNT', 'begin FAILED', e.message);
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: e.message }));
+        respondError(res, 500, e.message);
+      } finally {
+        addAccountBeginInFlight = false;
       }
       return;
     }
@@ -515,67 +544,60 @@ const server = http.createServer(async (req, res) => {
     // real email out of Antigravity's own Account panel DOM. This exists for
     // forcing the flow closed by hand if that ever misbehaves.
     if (url.pathname === '/api/add-account/finish' && req.method === 'POST') {
-      let body = '';
-      req.on('data', chunk => body += chunk);
-      req.on('end', async () => {
-        try {
-          if (!pendingAdd) throw new Error('No account sign-in is in progress.');
-          const { accountId: explicitId } = JSON.parse(body || '{}');
+      try {
+        if (!pendingAdd) throw new Error('No account sign-in is in progress.');
+        const { accountId: explicitId } = await readJsonBody(req);
 
-          let targetId: string;
-          if (explicitId) {
-            // Trustworthy: the caller is asserting a specific id, same as any
-            // other explicit connect() call — no guessing involved.
-            targetId = explicitId;
-          } else {
-            // Best-effort guess via agy's own log scan. Known to be unreliable
-            // for genuinely new accounts in this environment — see the removed
-            // watchForNewSignIn() comment above for why — so pass an explicit
-            // accountId in the request body instead whenever the real email is
-            // known (e.g. from the Account panel).
-            const before = snapshotProfiles();
-            let captured;
-            try {
-              const { stdout } = await execAsync(`node ${AGENT_HUB_CLI} connect --json`);
-              captured = JSON.parse(stdout);
-            } catch {
-              throw new Error('No signed-in account found yet. Finish signing in with Google first, or click Cancel to restore your previous account.');
-            }
-            if (pendingAdd.knownAccountIds.includes(captured.account_id)) {
-              if (restoreProfile(captured.account_id, before)) {
-                log('ADD_ACCOUNT', 'guessed capture landed on a known account; reverted its profile', captured.account_id);
-              }
-              throw new Error(
-                `Could not determine who signed in (guessed ${captured.account_id}, which already exists — nothing was changed). ` +
-                `Pass the real email as accountId, or click Cancel to restore your previous account.`
-              );
-            }
-            targetId = captured.account_id;
+        let targetId: string;
+        if (explicitId) {
+          // Trustworthy: the caller is asserting a specific id, same as any
+          // other explicit connect() call — no guessing involved.
+          targetId = explicitId;
+        } else {
+          // Best-effort guess via agy's own log scan. Known to be unreliable
+          // for genuinely new accounts in this environment — see the removed
+          // watchForNewSignIn() comment above for why — so pass an explicit
+          // accountId in the request body instead whenever the real email is
+          // known (e.g. from the Account panel).
+          const before = snapshotProfiles();
+          let captured;
+          try {
+            captured = await runCliJson(['connect', '--json']);
+          } catch {
+            throw new Error('No signed-in account found yet. Finish signing in with Google first, or click Cancel to restore your previous account.');
           }
-
-          const { stdout: connectOut } = await execAsync(`node ${AGENT_HUB_CLI} connect "${targetId}" --json`);
-          const captured = JSON.parse(connectOut);
-          log('ADD_ACCOUNT', 'captured account', captured.account_id);
-
-          // Signing back in as the same account is not a failure — the state is
-          // consistent and the account is saved — but it did not add anything,
-          // and silently reporting success would be a lie.
-          const isNewAccount = captured.account_id !== pendingAdd.backupAccountId;
-          if (!isNewAccount) {
-            log('ADD_ACCOUNT', 'captured account is the same one signed out of; nothing added', captured.account_id);
+          if (pendingAdd.knownAccountIds.includes(captured.account_id)) {
+            if (restoreProfile(captured.account_id, before)) {
+              log('ADD_ACCOUNT', 'guessed capture landed on a known account; reverted its profile', captured.account_id);
+            }
+            throw new Error(
+              `Could not determine who signed in (guessed ${captured.account_id}, which already exists — nothing was changed). ` +
+              `Pass the real email as accountId, or click Cancel to restore your previous account.`
+            );
           }
-
-          setPendingAdd(null);
-          const restart = await restartAntigravityHub();
-          log('ADD_ACCOUNT', 'hub restarted onto captured account', restart);
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, accountId: captured.account_id, isNewAccount }));
-        } catch (e: any) {
-          log('ADD_ACCOUNT', 'finish FAILED', e.message);
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: e.message }));
+          targetId = captured.account_id;
         }
-      });
+
+        const captured = await runCliJson(['connect', targetId, '--json']);
+        log('ADD_ACCOUNT', 'captured account', captured.account_id);
+
+        // Signing back in as the same account is not a failure — the state is
+        // consistent and the account is saved — but it did not add anything,
+        // and silently reporting success would be a lie.
+        const isNewAccount = captured.account_id !== pendingAdd.backupAccountId;
+        if (!isNewAccount) {
+          log('ADD_ACCOUNT', 'captured account is the same one signed out of; nothing added', captured.account_id);
+        }
+
+        setPendingAdd(null);
+        const restart = await restartAntigravityHub();
+        log('ADD_ACCOUNT', 'hub restarted onto captured account', restart);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, accountId: captured.account_id, isNewAccount }));
+      } catch (e: any) {
+        log('ADD_ACCOUNT', 'finish FAILED', e.message);
+        respondError(res, 500, e.message);
+      }
       return;
     }
 
@@ -584,47 +606,41 @@ const server = http.createServer(async (req, res) => {
     // (SemanticLocator.findAccountPanelEmail(), settings-standalone only) — the
     // id is never guessed, so this class of misattribution bug cannot recur.
     if (url.pathname === '/api/add-account/report-identity' && req.method === 'POST') {
-      let body = '';
-      req.on('data', chunk => body += chunk);
-      req.on('end', async () => {
-        try {
-          if (!pendingAdd) {
-            // Not an error: the frontend polls independently of pending state
-            // and may report a stale read from just after the flow ended.
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ ok: true, noop: true, reason: 'no add-account flow in progress' }));
-            return;
-          }
-
-          const { accountId } = JSON.parse(body || '{}');
-          if (!accountId) throw new Error('Missing accountId');
-
-          // The backup account showing back up is not a completed sign-in —
-          // the hub can rewrite that Keychain slot on its own, and the Account
-          // panel can still be rendering the pre-sign-out state for a moment
-          // right after the reload. Keep waiting either way.
-          if (accountId === pendingAdd.backupAccountId) {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ ok: true, noop: true, reason: 'still the backed-up account' }));
-            return;
-          }
-
-          const { stdout } = await execAsync(`node ${AGENT_HUB_CLI} connect "${accountId}" --json`);
-          const captured = JSON.parse(stdout);
-          const isNewAccount = !pendingAdd.knownAccountIds.includes(captured.account_id);
-          log('ADD_ACCOUNT', 'identity reported from Account panel, captured', captured.account_id, `isNew=${isNewAccount}`);
-
-          if (isNewAccount) lastAddedAccountId = captured.account_id;
-          setPendingAdd(null);
-
+      try {
+        if (!pendingAdd) {
+          // Not an error: the frontend polls independently of pending state
+          // and may report a stale read from just after the flow ended.
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, accountId: captured.account_id, isNewAccount }));
-        } catch (e: any) {
-          log('ADD_ACCOUNT', 'report-identity FAILED', e.message);
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: e.message }));
+          res.end(JSON.stringify({ ok: true, noop: true, reason: 'no add-account flow in progress' }));
+          return;
         }
-      });
+
+        const { accountId } = await readJsonBody(req);
+        if (!accountId) throw new Error('Missing accountId');
+
+        // The backup account showing back up is not a completed sign-in —
+        // the hub can rewrite that Keychain slot on its own, and the Account
+        // panel can still be rendering the pre-sign-out state for a moment
+        // right after the reload. Keep waiting either way.
+        if (accountId === pendingAdd.backupAccountId) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, noop: true, reason: 'still the backed-up account' }));
+          return;
+        }
+
+        const captured = await runCliJson(['connect', accountId, '--json']);
+        const isNewAccount = !pendingAdd.knownAccountIds.includes(captured.account_id);
+        log('ADD_ACCOUNT', 'identity reported from Account panel, captured', captured.account_id, `isNew=${isNewAccount}`);
+
+        if (isNewAccount) setLastAddedAccountId(captured.account_id);
+        setPendingAdd(null);
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, accountId: captured.account_id, isNewAccount }));
+      } catch (e: any) {
+        log('ADD_ACCOUNT', 'report-identity FAILED', e.message);
+        respondError(res, 500, e.message);
+      }
       return;
     }
 
@@ -637,7 +653,7 @@ const server = http.createServer(async (req, res) => {
         // the saved credential profile, and the hub rebuilds its cached session
         // from that on the restart below. That is the same path every ordinary
         // account switch takes, so it is exercised constantly.
-        await execAsync(`node ${AGENT_HUB_CLI} switch "${backupAccountId}" --json`);
+        await runCli(['switch', backupAccountId, '--json']);
         log('ADD_ACCOUNT', 'restored backup account', backupAccountId);
         setPendingAdd(null);
         await restartAntigravityHub();
@@ -645,8 +661,7 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ ok: true, restored: backupAccountId }));
       } catch (e: any) {
         log('ADD_ACCOUNT', 'cancel FAILED', e.message);
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: e.message }));
+        respondError(res, 500, e.message);
       }
       return;
     }
@@ -655,7 +670,7 @@ const server = http.createServer(async (req, res) => {
     // destroys any in-page record that a sign-in is underway.
     if (url.pathname === '/api/add-account/status' && req.method === 'GET') {
       const justAdded = lastAddedAccountId;
-      lastAddedAccountId = null;
+      setLastAddedAccountId(null);
       // signedOut drives the rescue banner: when signed out there is no profile
       // avatar in the corner, so the badge and popup that normally open the
       // account list never render — without this the editor offers no way back
@@ -665,7 +680,7 @@ const server = http.createServer(async (req, res) => {
         pending: !!pendingAdd,
         ...(pendingAdd ?? {}),
         justAdded,
-        signedOut: await isSignedOut(),
+        signedOut: !(await isKeychainActiveAvailable()),
       }));
       return;
     }
@@ -686,19 +701,78 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === '/api/quota-refresh' && req.method === 'POST') {
-      const { stdout } = await execAsync(`node ${AGENT_HUB_CLI} quota --all --json`);
+      const stdout = await runCli(['quota', '--all', '--json']);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(stdout);
       return;
     }
 
-    res.writeHead(404, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Not Found' }));
+    respondError(res, 404, 'Not Found');
   } catch (err: any) {
-    res.writeHead(500, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: err.message }));
+    respondError(res, 500, err.message);
   }
 });
+
+// Manual, fully interactive fallback for adding an account — the primary path
+// is the in-editor flow (/api/add-account/begin et al.), this exists only
+// because `login` categorically cannot run any other way (see the comment at
+// the /api/login handler above). No dynamic account id is interpolated here —
+// every step runs `connect`/`login` bare — so this plain shell string carries
+// none of the injection risk the execFile-based JSON endpoints had to be
+// fixed for.
+function buildLoginTerminalScript(): string {
+  const cli = JSON.stringify(path.join(AGENT_HUB_DIST, 'cli.js'));
+  return [
+    '#!/bin/bash',
+    'set -o pipefail',
+    'echo "=== Add a new Antigravity account ==="',
+    'echo',
+    'echo "Step 1/3: re-saving your current account..."',
+    'echo "(Antigravity refreshes its token in the background, so the saved copy"',
+    'echo " drifts out of sync. Sign-in refuses to start until it matches again.)"',
+    'echo',
+    `node ${cli} connect`,
+    'if [ $? -ne 0 ]; then',
+    '  echo',
+    '  echo "Could not re-save the current account, so sign-in was not started."',
+    '  echo "Nothing was changed."',
+    '  echo "Press Return to close this window."',
+    '  read -r _',
+    '  exit 1',
+    'fi',
+    'echo',
+    'echo "Step 2/3: sign in with the NEW Google account..."',
+    'echo',
+    `node ${cli} login`,
+    'if [ $? -ne 0 ]; then',
+    '  echo',
+    '  echo "Sign-in did not complete. Your previous account was restored."',
+    '  echo "Press Return to close this window."',
+    '  read -r _',
+    '  exit 1',
+    'fi',
+    'echo',
+    'echo "Step 3/3: saving the new account..."',
+    `node ${cli} connect`,
+    'if [ $? -eq 0 ]; then',
+    '  echo',
+    '  echo "Applying the new account to the running Antigravity session..."',
+    // Without this the sign-in leaves the new account active in the
+    // Keychain while the running hub keeps serving the old one.
+    `  curl -s -X POST http://127.0.0.1:${PORT}/api/hub-restart >/dev/null 2>&1 || echo "  (could not reach the accounts daemon — restart VS Code to apply)"`,
+    '  echo',
+    '  echo "Done. The new account is now available in Antigravity."',
+    '  echo',
+    `  node ${cli} list`,
+    'else',
+    '  echo',
+    '  echo "Sign-in worked but saving it failed. Run: agent-hub-accounts connect"',
+    'fi',
+    'echo',
+    'echo "Press Return to close this window."',
+    'read -r _',
+  ].join('\n');
+}
 
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`[Accounts Daemon] Listening on http://127.0.0.1:${PORT}`);

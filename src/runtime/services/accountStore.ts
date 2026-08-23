@@ -5,7 +5,12 @@ import { showProgress } from '../ui/progressOverlay';
 export interface SubscriptionAccount {
   id: string;
   name: string;
-  plan: 'Free' | 'Google AI Pro' | 'Google AI Ultra';
+  // The exact text Antigravity's own Settings → Account page shows after
+  // "Your Plan: " for whichever account was active when it was last observed
+  // — see docs/DECISIONS.md, "账号等级(Plan)". Not a closed Free/Pro/Ultra
+  // union: there is no CLI field for this, so it can only ever be real text
+  // actually seen in that DOM, or 'Unknown' before it's been seen once.
+  plan: string;
   quotaPercent: number;
   color: string;
   isActive: boolean;
@@ -57,15 +62,10 @@ export class AccountStore {
           const known = [gem5h, gemWeekly].filter((v): v is number => v != null);
           const quota = known.length > 0 ? Math.min(...known) : (acc.issue ? 0 : 100);
 
-          let plan: 'Free' | 'Google AI Pro' | 'Google AI Ultra' = 'Google AI Pro';
-          if (acc.issue === 'eligibility_failed') {
-            plan = 'Free';
-          }
-
           return {
             id: acc.account_id,
             name: acc.account_id.split('@')[0],
-            plan,
+            plan: acc.plan ?? 'Unknown',
             quotaPercent: quota,
             color: colors[idx % colors.length],
             isActive: Boolean(acc.active), // schema v2 field is `active`, not `current` — see docs/DECISIONS.md
@@ -276,6 +276,16 @@ export class AccountStore {
   // act on it (no flow in progress, or it's still the backed-up account).
   public static async reportAddedIdentity(accountId: string): Promise<{ ok: boolean; noop?: boolean; accountId?: string; isNewAccount?: boolean; error?: string }> {
     return this.postJson('/api/add-account/report-identity', { accountId });
+  }
+
+  // Reports the "Your Plan: ..." label the Settings → Account page just
+  // showed for whichever account is active right now — see
+  // SemanticLocator.findAccountPlanLabel() and docs/DECISIONS.md, "账号等级
+  // (Plan)". Fire-and-forget: a failed report just means the plan stays
+  // 'Unknown' or shows a stale value until the next successful observation,
+  // not a broken flow.
+  public static reportPlan(accountId: string, label: string): void {
+    void this.postJson('/api/report-plan', { accountId, label });
   }
 
   public static async triggerConnect(accountId?: string): Promise<{ ok: boolean; error?: string }> {

@@ -1,47 +1,36 @@
 import { AccountStore } from '../services/accountStore';
 import { showConfirm, showAlert } from './confirmDialog';
 import { showProgress } from './progressOverlay';
+import { bindUntilRemoved, unbind, shouldSkipRender, renderOrDefer } from './renderGuard';
 
 // Deterministic initial, not a stock photo — see docs/DECISIONS.md, "头像".
 function initial(name: string): string {
   return (name.trim()[0] || '?').toUpperCase();
 }
 
-// A fresh popup is built on every open (including every hover over the
-// bottom-left corner), so its window listener has to come back off on close —
-// otherwise each open leaves behind a listener that re-renders a detached node
-// on every ag-account-changed, forever. Measured: 5 open/close cycles leaked
-// exactly 5 listeners before this. The controller rides on the element so
-// closePopup() can abort it without tracking popup state separately.
-const ABORT_KEY = '__agAbortController';
-
 export function createAccountPopup(): HTMLElement {
   const container = document.createElement('div');
   container.className = 'ag-enhancer-popup';
   container.id = 'ag-enhancer-multi-account-popup';
 
-  const controller = new AbortController();
-  (container as any)[ABORT_KEY] = controller;
-
   renderPopupContent(container);
+
+  // A background poll firing while the popup happens to be open — not a click
+  // gesture, so no mid-click risk here, but still goes through renderOrDefer
+  // for consistency with settingsEnhancer.ts's identical listener.
+  const signal = bindUntilRemoved(container, 'ag-account-changed', () => renderOrDefer(() => renderPopupContent(container)));
 
   // Fetch live accounts from daemon asynchronously
   AccountStore.fetchLiveAccounts().then(() => {
-    if (!controller.signal.aborted) renderPopupContent(container);
+    if (!signal.aborted) renderPopupContent(container);
   });
-
-  window.addEventListener('ag-account-changed', () => {
-    renderPopupContent(container);
-  }, { signal: controller.signal });
 
   return container;
 }
 
 export function destroyAccountPopup(container: HTMLElement): void {
-  (container as any)[ABORT_KEY]?.abort();
+  unbind(container);
 }
-
-const RENDER_SIGNATURE_KEY = '__agPopupSignature';
 
 function renderPopupContent(container: HTMLElement) {
   const accounts = AccountStore.getAccounts();
@@ -56,8 +45,7 @@ function renderPopupContent(container: HTMLElement) {
     count,
     accounts.map(a => [a.id, a.name, a.plan, a.quotaPercent, a.isActive, a.issue ?? '', a.tokenMask]),
   ]);
-  if ((container as any)[RENDER_SIGNATURE_KEY] === signature) return;
-  (container as any)[RENDER_SIGNATURE_KEY] = signature;
+  if (shouldSkipRender(container, signature)) return;
 
   container.innerHTML = `
     <div class="ag-enhancer-header">

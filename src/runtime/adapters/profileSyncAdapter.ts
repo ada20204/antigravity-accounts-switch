@@ -1,5 +1,6 @@
 import { SubscriptionAccount } from '../services/accountStore';
 import { SemanticLocator } from './semanticLocator';
+import { leafEmailText, isLeafTextNode } from './domUtils';
 
 export class ProfileSyncAdapter {
   /**
@@ -15,14 +16,18 @@ export class ProfileSyncAdapter {
       if (bottomProfile) {
         // Leaf nodes only — textContent containing '@' on a non-leaf ancestor
         // would be the avatar/icon wrapper; overwriting it destroys the subtree.
+        // Uses the same strict, anchored email match as the other two copies
+        // of this check (semanticLocator.ts) — this one used to be a bare
+        // `.includes('@')`, which meant any leaf node merely containing '@'
+        // (a stray icon title, not a real email) got silently overwritten.
+        // See docs/DECISIONS.md.
         const textNodes = Array.from(bottomProfile.querySelectorAll<HTMLElement>('div, span, p'));
-        const isLeafText = (t: HTMLElement) => t.childNodes.length === 1 && t.childNodes[0].nodeType === Node.TEXT_NODE;
-        const emailNode = textNodes.find(t => isLeafText(t) && t.textContent?.includes('@'));
+        const emailNode = textNodes.find(t => leafEmailText(t) !== null);
         if (emailNode) {
           emailNode.textContent = activeAccount.id;
         }
 
-        const nameNode = textNodes.find(t => t !== emailNode && t.childNodes.length === 1 && t.childNodes[0].nodeType === Node.TEXT_NODE);
+        const nameNode = textNodes.find(t => t !== emailNode && isLeafTextNode(t));
         if (nameNode) {
           nameNode.textContent = activeAccount.name;
         }

@@ -193,9 +193,24 @@ async function listCdpTargets(): Promise<CdpTarget[]> {
 // Page.reload/etc. only work on the top-level page target, not an iframe
 // subtarget — this is the actual VS Code workbench window (title "Visual
 // Studio Code", url starting with vscode-file://.../workbench.html).
+//
+// With more than one VS Code window open there is no signal in the plain
+// CDP /json listing that says which workbench target owns the hub we're
+// trying to reload — targets are a flat list, iframes aren't linked back to
+// their parent page here. Guessing (picking the first match) risks silently
+// reloading an unrelated window while the one that actually needs it sits
+// untouched. Refusing and logging is the honest answer: the caller already
+// treats "target not found" as "window reload failed, hub stays down until
+// reloaded manually", which is true and diagnosable, instead of quietly
+// doing the wrong thing.
 async function findWorkbenchPageTarget(): Promise<CdpTarget | null> {
   const targets = await listCdpTargets();
-  return targets.find(t => t.type === 'page' && t.url.includes('workbench.html')) ?? null;
+  const workbenches = targets.filter(t => t.type === 'page' && t.url.includes('workbench.html'));
+  if (workbenches.length > 1) {
+    log('HUB_RESTART', `${workbenches.length} VS Code windows open, cannot tell which owns this hub — refusing to guess`);
+    return null;
+  }
+  return workbenches[0] ?? null;
 }
 
 async function reloadIframesOnPort(port: number): Promise<number> {
@@ -290,6 +305,17 @@ async function reloadWorkbenchWindow(): Promise<boolean> {
 // whichever one still had consumers. The only safe rule is "no iframe references
 // this port any more".
 //
+// Ownership is inferred from port numbers in CDP target URLs, not tracked
+// directly from the PID spawnHubOnSamePort() returns — there is no CDP-exposed
+// link from an iframe target back to which hub process serves its port other
+// than the port number itself. The two strike/count guards below exist because
+// of that (compensating for no direct ownership handle, not merely double-
+// checking one). Accepted tradeoff, reviewed 2026-08: if VS Code/CDP target URL
+// shapes ever change, this signal could go quietly wrong with no way for the
+// reaper to notice — low blast radius (worst case is a slightly wrong reap
+// decision on an already-idle hub, not touching an in-use one, given the
+// guards), so not worth a bigger rework unless that actually happens.
+//
 // Two guards against killing something still needed:
 //  - Requires two consecutive orphan sightings. The extension spawns its hub and
 //    only wires an iframe to it once waitForServerReady passes, so a single
@@ -363,6 +389,12 @@ export interface HubRestartResult {
   hubPidsStopped: number[];
   forcedKillPids: number[];
   newHubPid?: number;
+  // Set when the caller's onStopped callback threw. The restart itself still
+  // proceeds (see below) — this only tells the caller that whatever mutation
+  // onStopped was supposed to make may not have happened, so a caller like
+  // begin() (which uses onStopped to clear credentials) must not claim the
+  // user is signed out without checking this first.
+  onStoppedError?: string;
   timingMs: { stopHub: number; hubHealthy: number; reload: number; total: number };
 }
 
@@ -373,8 +405,26 @@ export interface HubRestartResult {
 // gets silently undone. (antigravity-sync-mcp's restart worker learned the same
 // thing — its auth-clear step carries the comment "在进程退出后执行，避免被
 // Antigravity 写回覆盖".)
+//
+// A failure in onStopped does NOT abort the restart. An earlier version let it
+// propagate out of the whole function — the hub was already dead by then
+// (stopHubProcesses() already ran), so the caller's catch block reported "could
+// not start sign-in, nothing was changed" while the hub sat there killed with
+// no replacement ever spawned. Swallowing the error here and continuing to
+// respawn means the hub is never left dead because of a callback failure;
+// onStoppedError lets the caller still report the mutation itself as uncertain
+// without lying about the hub's state.
 export async function restartAntigravityHub(
-  onStopped?: () => Promise<void>
+  onStopped?: () => Promise<void>,
+  // 'window' forces a full VS Code workbench reload instead of the fast
+  // iframe-only refresh after the same-port respawn. Needed by begin(): a
+  // plain iframe reload only refreshes webview content, but the extension
+  // host never learns the hub was replaced, so its own "no hub / show
+  // sign-in" detection never fires and the native login screen doesn't
+  // appear — see docs/DECISIONS.md, "添加账号原生登录页不出现". Regular
+  // switch() doesn't need this: credentials are still valid, so refreshed
+  // webview content is all that's required.
+  options?: { reloadStrategy?: 'iframe' | 'window' }
 ): Promise<HubRestartResult> {
   if (restartInProgress) {
     log('HUB_RESTART', 'restart already in progress, skipping duplicate request');
@@ -401,24 +451,39 @@ export async function restartAntigravityHub(
     }
     const tStopped = Date.now();
 
+    let onStoppedError: string | undefined;
     if (onStopped) {
-      await onStopped();
+      try {
+        await onStopped();
+      } catch (e: any) {
+        onStoppedError = e?.message ?? String(e);
+        log('HUB_RESTART', 'onStopped callback failed; restarting the hub anyway rather than leaving it dead', onStoppedError);
+      }
     }
 
     if (spec) {
       const spawned = await spawnHubOnSamePort(spec);
       if (spawned) {
         const tHealthy = Date.now();
-        const reloaded = await reloadIframesOnPort(spec.port);
+        let detail: string;
+        if (options?.reloadStrategy === 'window') {
+          const windowReloaded = await reloadWorkbenchWindow();
+          detail = `respawned hub on port ${spec.port} (pid ${spawned.pid}), ${windowReloaded ? 'reloaded VS Code window' : 'FAILED to reload window — extension host may still think the old hub is running'}`;
+          log('HUB_RESTART', `same-port respawn OK on ${spec.port}, ${windowReloaded ? 'reloaded VS Code window' : 'window reload FAILED'}`);
+        } else {
+          const reloaded = await reloadIframesOnPort(spec.port);
+          detail = `respawned hub on port ${spec.port} (pid ${spawned.pid}), reloaded ${reloaded} iframe(s)`;
+          log('HUB_RESTART', `same-port respawn OK on ${spec.port}, reloaded ${reloaded} iframe(s)`);
+        }
         const tDone = Date.now();
-        log('HUB_RESTART', `same-port respawn OK on ${spec.port}, reloaded ${reloaded} iframe(s)`);
         return {
           restarted: true,
           strategy: 'same-port-respawn',
-          detail: `respawned hub on port ${spec.port} (pid ${spawned.pid}), reloaded ${reloaded} iframe(s)`,
+          detail,
           hubPidsStopped: pids,
           forcedKillPids: forcedKill,
           newHubPid: spawned.pid,
+          onStoppedError,
           timingMs: {
             stopHub: tStopped - t0,
             hubHealthy: tHealthy - tStopped,
@@ -444,6 +509,7 @@ export async function restartAntigravityHub(
         : 'no hub process was running',
       hubPidsStopped: pids,
       forcedKillPids: forcedKill,
+      onStoppedError,
       timingMs: {
         stopHub: tStopped - t0,
         hubHealthy: 0,

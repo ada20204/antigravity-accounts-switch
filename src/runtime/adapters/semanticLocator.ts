@@ -1,3 +1,5 @@
+import { leafEmailText, isLeafTextNode } from './domUtils';
+
 export interface AnchorPosition {
   top?: number;
   bottom?: number;
@@ -19,12 +21,9 @@ export class SemanticLocator {
 
     // 2. 强语义特征匹配: 查找包含邮箱格式 (@) 且属于交互容器的元素
     const allElements = Array.from(document.querySelectorAll<HTMLElement>('div, span, p, button, a'));
-    
+
     // 匹配包含邮箱特征的文本节点
-    const emailNode = allElements.find(el => {
-      const text = el.childNodes.length === 1 && el.childNodes[0].nodeType === Node.TEXT_NODE ? el.textContent?.trim() : '';
-      return text && /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(text);
-    });
+    const emailNode = allElements.find(el => leafEmailText(el) !== null);
 
     if (emailNode) {
       // 向上回溯到可点击的容器（button、带 role="button" 或最外层 flex 行）
@@ -92,7 +91,16 @@ export class SemanticLocator {
     );
     if (rings.length === 0) return null;
 
-    let ancestor: HTMLElement | null = rings[0];
+    // Starts from the PARENT of the first ring, not the ring itself.
+    // Node.contains() is true for a node containing itself, so with exactly
+    // one ring on the page, starting at rings[0] made the loop below exit
+    // immediately and return the ring element as its own "container" —
+    // settingsEnhancer.ts then appendChild'd our card straight into the
+    // native ring widget, visibly breaking it, until a second ring appeared
+    // and the container got recomputed correctly. Starting one level up
+    // guarantees the returned element is never one of the rings themselves,
+    // for both the one-ring and multi-ring case.
+    let ancestor: HTMLElement | null = rings[0].parentElement;
     while (ancestor && !rings.every(ring => ancestor!.contains(ring))) {
       ancestor = ancestor.parentElement;
     }
@@ -122,13 +130,28 @@ export class SemanticLocator {
   public static findAccountPanelEmail(): string | null {
     const leaves = Array.from(document.querySelectorAll<HTMLElement>('div, span, p'));
     const emailLeaf = leaves.find(el => {
-      if (el.childNodes.length !== 1 || el.childNodes[0].nodeType !== Node.TEXT_NODE) return false;
-      const text = el.textContent?.trim() ?? '';
-      if (!/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(text)) return false;
+      if (leafEmailText(el) === null) return false;
       const context = el.parentElement?.parentElement?.innerText ?? '';
       return /Sign Out/i.test(context);
     });
-    return emailLeaf ? emailLeaf.textContent!.trim() : null;
+    return emailLeaf ? leafEmailText(emailLeaf) : null;
+  }
+
+  /**
+   * 原生 Settings → General → Account 卡片里的 "Your Plan: <label>" 行——这是
+   * 判断账号等级(Free/Pro/Ultra)唯一的真实来源。`route --json` 的 schema 里
+   * 没有 plan/tier/subscription 字段(现场核实过),而这行文字只在 Settings
+   * 的 General 子页存在,且只反映"当前激活账号"的等级——不是每个已保存账号
+   * 都能同时读到,调用方需要按账号 id 自行持久化。见 docs/DECISIONS.md,
+   * "账号等级(Plan)"。
+   */
+  public static findAccountPlanLabel(): string | null {
+    const PREFIX = 'Your Plan:';
+    const leaves = Array.from(document.querySelectorAll<HTMLElement>('div, span, p'));
+    const node = leaves.find(el => isLeafTextNode(el) && (el.textContent?.trim().startsWith(PREFIX) ?? false));
+    if (!node) return null;
+    const label = node.textContent!.trim().slice(PREFIX.length).trim();
+    return label || null;
   }
 
   private static isElementVisible(el: HTMLElement): boolean {
