@@ -32,21 +32,8 @@ export function respondError(res: ServerResponse, status: number, error: string,
   respondJson(res, status, code ? { error, code } : { error });
 }
 
-// Origin allow-list, not '*' — see docs/DECISIONS.md, "CORS 白名单策略".
-//
-// Enforcement matters as much as the allow-list itself: setting
-// Access-Control-Allow-Origin only controls whether a browser lets the calling
-// page's JS *read* the response. It does nothing to stop the request from
-// being *sent* and executed server-side in the first place — a same-origin
-// "simple" request (no custom Content-Type, no body, which several of this
-// daemon's own endpoints are) never triggers a CORS preflight at all, so a
-// page from any origin can already have caused the side effect before any
-// browser-side check would even run. The actual defense has to be server-side:
-// reject outright when a browser-supplied Origin header doesn't match. A
-// missing Origin header (curl, our own Terminal script) is treated as trusted
-// local access — a page in a browser tab always sends Origin on a cross-origin
-// fetch/XHR, preflighted or not, so its absence is not something a malicious
-// web page can forge from a plain fetch() call.
+// Origin allow-list — enforcement (not just this check) is what actually
+// matters; see docs/DECISIONS.md, "CORS 白名单策略".
 export function isAllowedOrigin(origin: string | undefined): boolean {
   if (!origin) return false;
   if (origin.startsWith('vscode-webview://')) return true;

@@ -1,21 +1,28 @@
 import { AccountStore } from '../services/accountStore';
 import { SemanticLocator } from '../adapters/semanticLocator';
 import { showConfirm, showAlert } from './confirmDialog';
-import { bindUntilRemoved, shouldSkipRender, renderOrDefer } from './renderGuard';
+import { bindUntilRemoved, unbind, shouldSkipRender, renderOrDefer } from './renderGuard';
+
+// bindUntilRemoved dedups by element reference — it only replaces a binding
+// made on the SAME element. A Settings tab switch destroys our card and the
+// code below builds a brand-new one, which is a different WeakMap key, so
+// nothing would abort the old binding without this. Tracked here instead of
+// relying on element identity, closing the leak bindUntilRemoved's per-
+// element dedup can't close on its own. See docs/DECISIONS.md.
+let lastBoundCard: HTMLElement | null = null;
 
 export function injectSettingsEnhancements() {
   // Opportunistic: only present on the Settings → General sub-page, and only
   // reflects whichever account is active right now. Cheap to check every
   // tick — findAccountPlanLabel() is a single DOM scan — and reportPlan()
-  // is only called when the label actually changed, so an account the user
-  // never opens this sub-page for just stays 'Unknown' until they do. See
+  // dedups internally against what it last actually sent, so an account the
+  // user never opens this sub-page for just stays 'Unknown' until they do,
+  // and calling this unconditionally every tick doesn't spam the daemon. See
   // docs/DECISIONS.md, "账号等级(Plan)".
   const planLabel = SemanticLocator.findAccountPlanLabel();
   if (planLabel) {
     const active = AccountStore.getAccounts().find(a => a.isActive);
-    if (active && active.plan !== planLabel) {
-      AccountStore.reportPlan(active.id, planLabel);
-    }
+    if (active) AccountStore.reportPlan(active.id, planLabel);
   }
 
   // Lives as the last child of the native quota container, so it sits below
@@ -35,11 +42,13 @@ export function injectSettingsEnhancements() {
       // Attached once here, not inside renderSettingsCard() — that runs on
       // every 1.5s tick and would pile up a new listener each time otherwise.
       // Switching Settings tabs re-renders the page and takes our card with
-      // it; bindUntilRemoved rebinding for the same element id here (a fresh
-      // card built next tick) automatically retires the old listener instead
-      // of leaking it.
+      // it, so the NEXT tick builds a brand-new element here — a different
+      // bindUntilRemoved key, which is exactly why lastBoundCard exists: it
+      // explicitly retires the previous element's binding first.
+      if (lastBoundCard) unbind(lastBoundCard);
       const cardRef = card;
-      bindUntilRemoved(cardRef, 'ag-account-changed', () => renderOrDefer(() => renderSettingsCard(cardRef)));
+      bindUntilRemoved(cardRef, 'ag-account-changed', () => renderOrDefer(cardRef, () => renderSettingsCard(cardRef)));
+      lastBoundCard = cardRef;
     } else if (card.parentElement !== container || container.lastElementChild !== card) {
       // Re-append only when it isn't already in place — appendChild always
       // mutates the DOM, and doing that every tick would fight the page.
@@ -49,7 +58,7 @@ export function injectSettingsEnhancements() {
     // render itself must go through renderOrDefer so a tick that lands mid
     // mousedown-to-click on a Switch/Remove row doesn't destroy the row the
     // browser is about to dispatch that click on.
-    renderOrDefer(() => renderSettingsCard(card!));
+    renderOrDefer(card!, () => renderSettingsCard(card!));
   }
 
   // No sidebar nav entry — see docs/DECISIONS.md, "Settings 卡片的几个小决策".

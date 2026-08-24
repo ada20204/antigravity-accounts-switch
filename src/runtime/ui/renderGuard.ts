@@ -72,8 +72,17 @@ export function shouldSkipRender(el: HTMLElement, signature: string, force = fal
 // flush from a `setTimeout(0)` inside the mouseup handler — rather than
 // flushing directly inside it — lets that synchronous dispatch complete on
 // the untouched DOM first.
+//
+// Keyed by the element the render targets, not a raw Set of closures: every
+// call site passes a freshly-created closure, so closure-identity dedup was
+// a no-op — two deferred requests for the same card during one held-down
+// gesture just piled up as two "different" entries that both ran on flush.
+// Keying by target element means a second request for the same element
+// simply replaces the first (safe: each thunk reads live current data, not
+// anything captured at request time), so a long gesture only ever leaves one
+// real pending render per element instead of accumulating duplicates.
 let pointerDown = false;
-const pending = new Set<() => void>();
+const pending = new Map<HTMLElement, () => void>();
 
 window.addEventListener('mousedown', () => { pointerDown = true; }, true);
 window.addEventListener('mouseup', () => {
@@ -82,20 +91,28 @@ window.addEventListener('mouseup', () => {
 }, true);
 
 function flushPending(): void {
-  const toRun = Array.from(pending);
+  // A new gesture can start before this timeout fires (two clicks landing in
+  // quick succession, or the tab briefly backgrounded clamps the timer). If
+  // one has, running now would replace DOM mid-gesture again — exactly the
+  // bug this file exists to prevent. Bail without rescheduling: the new
+  // gesture's own mouseup unconditionally calls setTimeout(flushPending, 0)
+  // again regardless of whether `pending` is empty, so nothing is lost.
+  if (pointerDown) return;
+  const toRun = Array.from(pending.values());
   pending.clear();
   toRun.forEach(fn => fn());
 }
 
 // Runs `fn` now, unless a mouse button is currently held down, in which case
-// it runs once released (after `click` has had its chance to fire). Only
+// it runs once released (after `click` has had its chance to fire). `key` is
+// the element the render targets — see the Map comment above for why. Only
 // meant for renders that a periodic/background trigger initiates — a render
 // invoked directly from a click handler's own resolution (e.g. "reset this
 // row's opacity now that the switch finished") should call its render
 // function directly instead, since by then the gesture is long over.
-export function renderOrDefer(fn: () => void): void {
+export function renderOrDefer(key: HTMLElement, fn: () => void): void {
   if (pointerDown) {
-    pending.add(fn);
+    pending.set(key, fn);
   } else {
     fn();
   }

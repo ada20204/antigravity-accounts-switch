@@ -278,6 +278,15 @@ export class AccountStore {
     return this.postJson('/api/add-account/report-identity', { accountId });
   }
 
+  // Dedup lives here rather than at the caller — settingsEnhancer.ts used to
+  // compare against its own 20s-stale local account cache, which meant a
+  // newly-observed label got re-POSTed on every 1.5s tick (~13x) until that
+  // cache caught up. Keying off what this method itself last actually sent
+  // is decoupled from that unrelated refresh cycle, so callers can just call
+  // this every time a label is observed without tracking staleness
+  // themselves.
+  private static lastReportedPlan = new Map<string, string>();
+
   // Reports the "Your Plan: ..." label the Settings → Account page just
   // showed for whichever account is active right now — see
   // SemanticLocator.findAccountPlanLabel() and docs/DECISIONS.md, "账号等级
@@ -285,6 +294,8 @@ export class AccountStore {
   // 'Unknown' or shows a stale value until the next successful observation,
   // not a broken flow.
   public static reportPlan(accountId: string, label: string): void {
+    if (this.lastReportedPlan.get(accountId) === label) return;
+    this.lastReportedPlan.set(accountId, label);
     void this.postJson('/api/report-plan', { accountId, label });
   }
 

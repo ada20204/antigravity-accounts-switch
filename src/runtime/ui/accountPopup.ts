@@ -18,7 +18,7 @@ export function createAccountPopup(): HTMLElement {
   // A background poll firing while the popup happens to be open — not a click
   // gesture, so no mid-click risk here, but still goes through renderOrDefer
   // for consistency with settingsEnhancer.ts's identical listener.
-  const signal = bindUntilRemoved(container, 'ag-account-changed', () => renderOrDefer(() => renderPopupContent(container)));
+  const signal = bindUntilRemoved(container, 'ag-account-changed', () => renderOrDefer(container, () => renderPopupContent(container)));
 
   // Fetch live accounts from daemon asynchronously
   AccountStore.fetchLiveAccounts().then(() => {

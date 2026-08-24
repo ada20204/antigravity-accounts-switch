@@ -96,49 +96,53 @@ const HUB_TOKEN_FILE = path.join(os.homedir(), '.gemini', 'jetski-standalone-oau
 // alone is not enough: switching to any OTHER already-saved account also
 // changes it, and would be announced as a new account that was in the list all
 // along.
+// Shared by all three persisted stores below (pendingAdd, lastAddedAccountId,
+// knownPlans) — each used to hand-roll its own "read JSON from os.tmpdir(),
+// tolerate missing/corrupt file, write-or-rm" pair independently. `validate`
+// carries whatever back-compat/shape-checking each store still needs; this
+// only collapses the file-IO scaffold around it.
+function loadJsonFile<T>(file: string, validate: (parsed: any) => T | null): T | null {
+  try {
+    return validate(JSON.parse(fs.readFileSync(file, 'utf8')));
+  } catch {
+    return null;
+  }
+}
+
+function saveJsonFile(file: string, value: unknown, logTag: string, logContext: string): void {
+  try {
+    if (value !== null && value !== undefined) fs.writeFileSync(file, JSON.stringify(value));
+    else fs.rmSync(file, { force: true });
+  } catch (e: any) {
+    log(logTag, `could not persist ${logContext}`, e.message);
+  }
+}
+
 interface PendingAdd { backupAccountId: string; startedAt: number; knownAccountIds: string[] }
 const PENDING_ADD_FILE = path.join(os.tmpdir(), 'antigravity-accounts-enhancer-pending-add.json');
 const LAST_ADDED_FILE = path.join(os.tmpdir(), 'antigravity-accounts-enhancer-last-added.json');
 
 function loadPendingAdd(): PendingAdd | null {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(PENDING_ADD_FILE, 'utf8'));
+  return loadJsonFile(PENDING_ADD_FILE, parsed => {
     if (!parsed?.backupAccountId) return null;
     // knownAccountIds was added later; a file written by an older daemon has
     // none, and an undefined array would throw the moment the watcher runs.
     return { ...parsed, knownAccountIds: parsed.knownAccountIds ?? [parsed.backupAccountId] };
-  } catch {
-    return null;
-  }
+  });
 }
 
 function setPendingAdd(value: PendingAdd | null): void {
   pendingAdd = value;
-  try {
-    if (value) fs.writeFileSync(PENDING_ADD_FILE, JSON.stringify(value));
-    else fs.rmSync(PENDING_ADD_FILE, { force: true });
-  } catch (e: any) {
-    log('ADD_ACCOUNT', 'could not persist pending state', e.message);
-  }
+  saveJsonFile(PENDING_ADD_FILE, value, 'ADD_ACCOUNT', 'pending state');
 }
 
 function loadLastAddedAccountId(): string | null {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(LAST_ADDED_FILE, 'utf8'));
-    return typeof parsed?.accountId === 'string' ? parsed.accountId : null;
-  } catch {
-    return null;
-  }
+  return loadJsonFile(LAST_ADDED_FILE, parsed => typeof parsed?.accountId === 'string' ? parsed.accountId : null);
 }
 
 function setLastAddedAccountId(value: string | null): void {
   lastAddedAccountId = value;
-  try {
-    if (value) fs.writeFileSync(LAST_ADDED_FILE, JSON.stringify({ accountId: value }));
-    else fs.rmSync(LAST_ADDED_FILE, { force: true });
-  } catch (e: any) {
-    log('ADD_ACCOUNT', 'could not persist last-added notification', e.message);
-  }
+  saveJsonFile(LAST_ADDED_FILE, value ? { accountId: value } : null, 'ADD_ACCOUNT', 'last-added notification');
 }
 
 let pendingAdd: PendingAdd | null = loadPendingAdd();
@@ -157,20 +161,11 @@ let lastAddedAccountId: string | null = loadLastAddedAccountId();
 const PLAN_STORE_FILE = path.join(os.tmpdir(), 'antigravity-accounts-enhancer-plans.json');
 
 function loadKnownPlans(): Record<string, string> {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(PLAN_STORE_FILE, 'utf8'));
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
+  return loadJsonFile(PLAN_STORE_FILE, parsed => (parsed && typeof parsed === 'object') ? parsed : null) ?? {};
 }
 
 function saveKnownPlans(): void {
-  try {
-    fs.writeFileSync(PLAN_STORE_FILE, JSON.stringify(knownPlans));
-  } catch (e: any) {
-    log('PLAN', 'could not persist known plans', e.message);
-  }
+  saveJsonFile(PLAN_STORE_FILE, knownPlans, 'PLAN', 'known plans');
 }
 
 const knownPlans: Record<string, string> = loadKnownPlans();
@@ -215,17 +210,8 @@ const server = http.createServer(async (req, res) => {
   const origin = req.headers.origin;
   const allowed = isAllowedOrigin(origin);
 
-  // Enforced, not just reflected. Setting Access-Control-Allow-Origin alone
-  // only controls whether a browser lets the calling page's JS *read* the
-  // response — it does nothing to stop the request from being *sent* and
-  // executed. Several of this daemon's own endpoints are "simple" requests
-  // (no body, no custom Content-Type — e.g. /api/login) that never trigger a
-  // CORS preflight at all, so without this check any web page open in any
-  // browser tab on the machine could already sign the user out, kill/restart
-  // the hub, or cycle the active login before a browser-side check would ever
-  // run. A present-but-disallowed Origin is rejected outright; a missing one
-  // (curl, our own Terminal script) is trusted local access, matching this
-  // daemon's existing threat model — see docs/DECISIONS.md.
+  // Rejects outright rather than just reflecting the header — see
+  // isAllowedOrigin() in httpUtils.ts and docs/DECISIONS.md, "CORS 白名单策略".
   if (origin && !allowed) {
     log('REQ', req.method, req.url, `origin=${origin}`, 'REJECTED (origin not in allow-list)');
     respondError(res, 403, 'Origin not allowed');
@@ -513,15 +499,20 @@ const server = http.createServer(async (req, res) => {
 
         log('ADD_ACCOUNT', 'hub restarted into signed-out state', restart);
 
-        if (restart.onStoppedError) {
+        if (restart.onStoppedError || restart.reloadFailed) {
           // The hub is alive again (restartAntigravityHub never leaves it
-          // dead over this), but we don't actually know whether the sign-out
-          // took effect — reporting success here would be exactly the kind
-          // of false "nothing changed" this is meant to avoid in the other
-          // direction. Do not set pendingAdd: there is nothing to cancel back
-          // from if the user was never signed out.
+          // dead over this), but either the credential-clearing step may not
+          // have run (onStoppedError — e.g. a restart was already in flight
+          // and this one's onStopped never fired) or the VS Code window
+          // reload failed (reloadFailed — the native sign-in page this flow
+          // depends on never gets a chance to render). Either way, reporting
+          // success here would be exactly the kind of false "nothing changed"
+          // this is meant to avoid in the other direction. Do not set
+          // pendingAdd: there is nothing to cancel back from if the user was
+          // never actually signed out, or never shown a way to sign in.
+          const reason = restart.onStoppedError ?? 'the VS Code window failed to reload';
           throw new Error(
-            `Hub restarted, but clearing the current login may have failed (${restart.onStoppedError}). ` +
+            `Hub restarted, but clearing the current login may have failed (${reason}). ` +
             `Check whether Antigravity is actually signed out before trying again.`
           );
         }

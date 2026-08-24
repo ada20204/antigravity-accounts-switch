@@ -53,9 +53,21 @@ function keychainSnippet(finalStatement: string): string {
 
 // No `-w`, so this reads nothing secret and never prompts — just whether the
 // shared Keychain slot exists at all.
+//
+// On error, assume available (true) rather than letting the exception
+// propagate — the pre-refactor isSignedOut() this replaced had the same
+// catch, with the same reasoning: "can't tell — don't cry wolf". A transient
+// execFile hiccup here previously 500'd the whole /api/add-account/status
+// response (used as `signedOut: !(await isKeychainActiveAvailable())`),
+// dropping pending/justAdded for that poll mid-flow even though nothing
+// about the add-account state actually changed.
 export async function isKeychainActiveAvailable(): Promise<boolean> {
-  const { stdout } = await execFileAsync('node', ['-e', keychainSnippet('process.stdout.write(String(keychain.activeAvailable()));')]);
-  return stdout.trim() === 'true';
+  try {
+    const { stdout } = await execFileAsync('node', ['-e', keychainSnippet('process.stdout.write(String(keychain.activeAvailable()));')]);
+    return stdout.trim() === 'true';
+  } catch {
+    return true;
+  }
 }
 
 // `security delete-generic-password` — purely local, no OAuth revoke. See

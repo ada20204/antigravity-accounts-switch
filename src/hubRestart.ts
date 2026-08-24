@@ -395,6 +395,14 @@ export interface HubRestartResult {
   // begin() (which uses onStopped to clear credentials) must not claim the
   // user is signed out without checking this first.
   onStoppedError?: string;
+  // Set when a full VS Code window reload was attempted (either as the
+  // 'window' reloadStrategy or the same-port-respawn-failed fallback) and
+  // came back false. Distinct from onStoppedError: this means the credential
+  // mutation itself may have succeeded but the caller has no live UI
+  // reflecting it — begin() must treat this as a failure too, not just
+  // onStoppedError, or it reports a signed-out state whose sign-in page
+  // never actually appears. See docs/DECISIONS.md, "添加账号原生登录页不出现".
+  reloadFailed?: boolean;
   timingMs: { stopHub: number; hubHealthy: number; reload: number; total: number };
 }
 
@@ -434,6 +442,10 @@ export async function restartAntigravityHub(
       detail: 'restart already in progress',
       hubPidsStopped: [],
       forcedKillPids: [],
+      // The caller's onStopped never ran — a bare `undefined` here would let
+      // begin() read this the same as full success. Reuses the same field
+      // begin() already checks instead of adding a second, easy-to-forget one.
+      onStoppedError: onStopped ? 'a restart was already in progress; onStopped was never invoked' : undefined,
       timingMs: { stopHub: 0, hubHealthy: 0, reload: 0, total: 0 },
     };
   }
@@ -466,8 +478,10 @@ export async function restartAntigravityHub(
       if (spawned) {
         const tHealthy = Date.now();
         let detail: string;
+        let reloadFailed = false;
         if (options?.reloadStrategy === 'window') {
           const windowReloaded = await reloadWorkbenchWindow();
+          reloadFailed = !windowReloaded;
           detail = `respawned hub on port ${spec.port} (pid ${spawned.pid}), ${windowReloaded ? 'reloaded VS Code window' : 'FAILED to reload window — extension host may still think the old hub is running'}`;
           log('HUB_RESTART', `same-port respawn OK on ${spec.port}, ${windowReloaded ? 'reloaded VS Code window' : 'window reload FAILED'}`);
         } else {
@@ -484,6 +498,7 @@ export async function restartAntigravityHub(
           forcedKillPids: forcedKill,
           newHubPid: spawned.pid,
           onStoppedError,
+          reloadFailed,
           timingMs: {
             stopHub: tStopped - t0,
             hubHealthy: tHealthy - tStopped,
@@ -510,6 +525,7 @@ export async function restartAntigravityHub(
       hubPidsStopped: pids,
       forcedKillPids: forcedKill,
       onStoppedError,
+      reloadFailed: pids.length > 0 && !windowReloaded,
       timingMs: {
         stopHub: tStopped - t0,
         hubHealthy: 0,
