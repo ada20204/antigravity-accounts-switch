@@ -8,7 +8,7 @@ import { bindUntilRemoved, unbind, shouldSkipRender, renderOrDefer } from './ren
 // code below builds a brand-new one, which is a different WeakMap key, so
 // nothing would abort the old binding without this. Tracked here instead of
 // relying on element identity, closing the leak bindUntilRemoved's per-
-// element dedup can't close on its own. See docs/DECISIONS.md.
+// element dedup can't close on its own. See docs/decisions/2026-08-23-review-b9ad69f-followup-10-findings.md.
 let lastBoundCard: HTMLElement | null = null;
 
 export function injectSettingsEnhancements() {
@@ -18,7 +18,7 @@ export function injectSettingsEnhancements() {
   // dedups internally against what it last actually sent, so an account the
   // user never opens this sub-page for just stays 'Unknown' until they do,
   // and calling this unconditionally every tick doesn't spam the daemon. See
-  // docs/DECISIONS.md, "账号等级(Plan)".
+  // docs/decisions/2026-08-23-account-plan-tier.md.
   const planLabel = SemanticLocator.findAccountPlanLabel();
   if (planLabel) {
     const active = AccountStore.getAccounts().find(a => a.isActive);
@@ -61,7 +61,7 @@ export function injectSettingsEnhancements() {
     renderOrDefer(card!, () => renderSettingsCard(card!));
   }
 
-  // No sidebar nav entry — see docs/DECISIONS.md, "Settings 卡片的几个小决策".
+  // No sidebar nav entry — see docs/decisions/settings-card-minor-decisions.md.
   document.getElementById('ag-settings-nav-item')?.remove();
 }
 
@@ -178,7 +178,7 @@ function renderSettingsCard(card: HTMLElement, force = false) {
       // Deliberately not described as "forget locally": remove deletes the
       // saved credential copy, so getting this account back means a full
       // interactive sign-in again, not a one-click reconnect. It still never
-      // revokes the Google session (see docs/DECISIONS.md, "移除账号").
+      // revokes the Google session (see docs/decisions/remove-account-semantics.md).
       const proceed = await showConfirm(
         `Remove ${id}?\n\nThis deletes the saved credential for this account, so you can no longer switch to it — adding it back requires signing in with Google again. It does NOT sign the account out of Google or affect it anywhere else.`
       );

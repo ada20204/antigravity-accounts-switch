@@ -141,8 +141,8 @@ function syncRescueBanner(signedOut: boolean): void {
 // Antigravity's own Account panel DOM and reporting it — this is the fix for a
 // real incident where the previous approach (daemon-side polling that guessed
 // the id from agy's log files) filed a brand new sign-in under a stale,
-// unrelated account name and destroyed it. See docs/DECISIONS.md, "永远不要
-// 裸调 connect". The panel only exists on the Settings page.
+// unrelated account name and destroyed it. See
+// docs/decisions/2026-08-23-never-bare-connect-call.md. The panel only exists on the Settings page.
 function ownsIdentityReport(): boolean {
   return window.location.pathname === '/settings-standalone';
 }

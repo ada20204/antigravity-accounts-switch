@@ -33,7 +33,7 @@ export function respondError(res: ServerResponse, status: number, error: string,
 }
 
 // Origin allow-list — enforcement (not just this check) is what actually
-// matters; see docs/DECISIONS.md, "CORS 白名单策略".
+// matters; see docs/decisions/cors-allowlist-policy.md.
 export function isAllowedOrigin(origin: string | undefined): boolean {
   if (!origin) return false;
   if (origin.startsWith('vscode-webview://')) return true;

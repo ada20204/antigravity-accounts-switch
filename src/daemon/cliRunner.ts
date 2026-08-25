@@ -20,7 +20,7 @@ import path from 'path';
 const execFileAsync = promisify(execFile);
 
 // Overridable so this doesn't stay hardcoded to one machine/account — see
-// docs/DECISIONS.md. Falls back to the layout this project's own README
+// docs/decisions/2026-08-23-first-code-review-17-findings.md. Falls back to the layout this project's own README
 // assumes (sibling checkout under ~/work), which is what every environment
 // this has actually run in used so far.
 export const AGENT_HUB_DIST =
@@ -71,7 +71,7 @@ export async function isKeychainActiveAvailable(): Promise<boolean> {
 }
 
 // `security delete-generic-password` — purely local, no OAuth revoke. See
-// docs/DECISIONS.md, "添加账号".
+// docs/decisions/2026-08-23-add-account-native-browser-final.md.
 export async function detachActiveKeychainLogin(): Promise<void> {
   await execFileAsync('node', ['-e', keychainSnippet('keychain.detachActive();')]);
 }

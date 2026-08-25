@@ -1,5 +1,5 @@
 // Replaces window.confirm()/alert(), which silently no-op in the VS Code
-// webview sandbox — see docs/DECISIONS.md, "confirm()/alert() 静默失效".
+// webview sandbox — see docs/decisions/webview-confirm-alert-silent-failure.md.
 
 function buildOverlay(message: string): { overlay: HTMLElement; actions: HTMLElement } {
   const overlay = document.createElement('div');

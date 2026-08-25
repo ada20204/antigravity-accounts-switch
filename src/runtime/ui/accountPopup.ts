@@ -3,7 +3,7 @@ import { showConfirm, showAlert } from './confirmDialog';
 import { showProgress } from './progressOverlay';
 import { bindUntilRemoved, unbind, shouldSkipRender, renderOrDefer } from './renderGuard';
 
-// Deterministic initial, not a stock photo — see docs/DECISIONS.md, "头像".
+// Deterministic initial, not a stock photo — see docs/decisions/profile-trigger-sync-not-coordinate.md, "头像".
 function initial(name: string): string {
   return (name.trim()[0] || '?').toUpperCase();
 }

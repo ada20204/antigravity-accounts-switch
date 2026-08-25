@@ -7,7 +7,7 @@ export interface SubscriptionAccount {
   name: string;
   // The exact text Antigravity's own Settings → Account page shows after
   // "Your Plan: " for whichever account was active when it was last observed
-  // — see docs/DECISIONS.md, "账号等级(Plan)". Not a closed Free/Pro/Ultra
+  // — see docs/decisions/2026-08-23-account-plan-tier.md. Not a closed Free/Pro/Ultra
   // union: there is no CLI field for this, so it can only ever be real text
   // actually seen in that DOM, or 'Unknown' before it's been seen once.
   plan: string;
@@ -40,7 +40,7 @@ export class AccountStore {
 
   // Timestamped daemon-log marker for "this injected script instance came up
   // and started fetching" — diffed against [HUB_RESTART]/[CDP_INJECT] to see
-  // real end-to-end switch latency. See docs/DECISIONS.md, "切换耗时".
+  // real end-to-end switch latency. See docs/decisions/2026-08-22-switch-timing-instrumentation.md.
   public static logRuntimeBoot(): void {
     this.remoteLog('runtime booted, fetching accounts', { pageOrigin: window.location.origin });
   }
@@ -68,7 +68,7 @@ export class AccountStore {
             plan: acc.plan ?? 'Unknown',
             quotaPercent: quota,
             color: colors[idx % colors.length],
-            isActive: Boolean(acc.active), // schema v2 field is `active`, not `current` — see docs/DECISIONS.md
+            isActive: Boolean(acc.active), // schema v2 field is `active`, not `current` — see docs/decisions/credential-drift-explained.md
             tokenMask: '••••••••',
             issue: acc.issue ?? (acc.credential_drift ? 'credential_drift' : null),
             geminiWeekly: gemWeekly || 0,
@@ -184,7 +184,7 @@ export class AccountStore {
   }
 
   // Shared by every UI entry point so confirmation wording can't drift between
-  // them. Does not skip on cached isActive — see docs/DECISIONS.md, "账号切换语义".
+  // them. Does not skip on cached isActive — see docs/decisions/account-switch-semantics.md.
   public static async confirmAndSwitch(id: string): Promise<boolean> {
     const proceed = await showConfirm('Switching accounts restarts the Antigravity connection and interrupts any in-progress response. Continue?');
     if (!proceed) return false;
@@ -210,7 +210,7 @@ export class AccountStore {
   }
 
   // Opens a Terminal window where the interactive sign-in runs — `login` can't
-  // run inside the daemon (see docs/DECISIONS.md, "添加账号"). The sign-in and
+  // run inside the daemon (see docs/decisions/historical-add-account-terminal-required.md). The sign-in and
   // the follow-up capture both happen in that window, so there's nothing left
   // to drive from here afterwards except a refresh.
   public static async triggerLogin(): Promise<{ ok: boolean; error?: string }> {
@@ -228,7 +228,7 @@ export class AccountStore {
     }
   }
 
-  // --- Browser-based add-account (see docs/DECISIONS.md, "添加账号") ---
+  // --- Browser-based add-account (see docs/decisions/2026-08-23-add-account-native-browser-final.md) ---
   // begin() signs out so the hub serves its native sign-in page; the actual
   // Google sign-in is Antigravity's own flow, we don't drive it. finish()
   // captures whatever ended up signed in; cancel() puts the old account back.
@@ -272,7 +272,7 @@ export class AccountStore {
   }
 
   // Reports who the Account panel DOM shows as signed in — see
-  // docs/DECISIONS.md, "永远不要裸调 connect". noop:true means the daemon didn't
+  // docs/decisions/2026-08-23-never-bare-connect-call.md. noop:true means the daemon didn't
   // act on it (no flow in progress, or it's still the backed-up account).
   public static async reportAddedIdentity(accountId: string): Promise<{ ok: boolean; noop?: boolean; accountId?: string; isNewAccount?: boolean; error?: string }> {
     return this.postJson('/api/add-account/report-identity', { accountId });
@@ -289,8 +289,8 @@ export class AccountStore {
 
   // Reports the "Your Plan: ..." label the Settings → Account page just
   // showed for whichever account is active right now — see
-  // SemanticLocator.findAccountPlanLabel() and docs/DECISIONS.md, "账号等级
-  // (Plan)". Fire-and-forget: a failed report just means the plan stays
+  // SemanticLocator.findAccountPlanLabel() and docs/decisions/2026-08-23-account-plan-tier.md.
+  // Fire-and-forget: a failed report just means the plan stays
   // 'Unknown' or shows a stale value until the next successful observation,
   // not a broken flow.
   public static reportPlan(accountId: string, label: string): void {

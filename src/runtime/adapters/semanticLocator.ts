@@ -82,7 +82,7 @@ export class SemanticLocator {
    * 定位 Models 页面承载全部原生配额区块的容器（我们的卡片作为它的最后一个子元素）。
    *
    * 用官方测试钩子 [data-testid="quota-progress-circle"] 取所有配额环的最近公共祖先，
-   * 不依赖任何显示文本或 class 名——原因见 docs/DECISIONS.md, "Settings 页卡片锚点定位"。
+   * 不依赖任何显示文本或 class 名——原因见 docs/decisions/2026-08-23-settings-card-anchor-data-testid.md。
    * 我们自己的环用的是 class="ag-quota-ring"、不带 data-testid，所以不会自我干扰。
    */
   public static findQuotaSectionContainer(): HTMLElement | null {
@@ -117,7 +117,7 @@ export class SemanticLocator {
    * `email=` 格式的日志行。所以那个猜测机制在我们的环境里不是"会滞后",是
    * **结构性地永远猜不对**,冻结在很久以前某次跑 `agy` CLI 时最后一次留下的邮箱。
    * 已经真实损坏过一个账号(把新登录的凭证存进了一个不相干的旧邮箱名下)。
-   * 详见 docs/DECISIONS.md。
+   * 详见 docs/decisions/2026-08-23-account-corruption-guessing-broken.md。
    *
    * Account 面板平时 `display:none`,但邮箱文本节点始终在 DOM 里,不需要先点开
    * 头像触发显示。只在 Settings 页(`settings-standalone`)存在。
@@ -142,8 +142,8 @@ export class SemanticLocator {
    * 判断账号等级(Free/Pro/Ultra)唯一的真实来源。`route --json` 的 schema 里
    * 没有 plan/tier/subscription 字段(现场核实过),而这行文字只在 Settings
    * 的 General 子页存在,且只反映"当前激活账号"的等级——不是每个已保存账号
-   * 都能同时读到,调用方需要按账号 id 自行持久化。见 docs/DECISIONS.md,
-   * "账号等级(Plan)"。
+   * 都能同时读到,调用方需要按账号 id 自行持久化。见
+   * docs/decisions/2026-08-23-account-plan-tier.md。
    */
   public static findAccountPlanLabel(): string | null {
     const PREFIX = 'Your Plan:';

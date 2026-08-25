@@ -10,7 +10,7 @@ export class ProfileSyncAdapter {
     try {
       // Reuses SemanticLocator (not a standalone heuristic) so it returns null
       // in the Settings iframe, which has no real trigger — see
-      // docs/DECISIONS.md, "Profile 触发器同步".
+      // docs/decisions/profile-trigger-sync-not-coordinate.md.
       const bottomProfile = SemanticLocator.findProfileTrigger();
 
       if (bottomProfile) {
@@ -20,7 +20,7 @@ export class ProfileSyncAdapter {
         // of this check (semanticLocator.ts) — this one used to be a bare
         // `.includes('@')`, which meant any leaf node merely containing '@'
         // (a stray icon title, not a real email) got silently overwritten.
-        // See docs/DECISIONS.md.
+        // See docs/decisions/2026-08-23-account-corruption-guessing-broken.md.
         const textNodes = Array.from(bottomProfile.querySelectorAll<HTMLElement>('div, span, p'));
         const emailNode = textNodes.find(t => leafEmailText(t) !== null);
         if (emailNode) {
@@ -32,7 +32,7 @@ export class ProfileSyncAdapter {
           nameNode.textContent = activeAccount.name;
         }
 
-        // Does not touch the <img> avatar — see docs/DECISIONS.md, "头像".
+        // Does not touch the <img> avatar — see docs/decisions/profile-trigger-sync-not-coordinate.md, "头像".
         console.log('[ProfileSyncAdapter] Safely updated bottom trigger strictly in container');
       }
     } catch (e) {

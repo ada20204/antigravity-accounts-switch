@@ -1,7 +1,8 @@
 // Three small pieces of shared render/listener plumbing, each of which used to
 // be independently reimplemented in both accountPopup.ts and
-// settingsEnhancer.ts with no shared helper — see docs/DECISIONS.md for the
-// incidents that made each one necessary in the first place.
+// settingsEnhancer.ts with no shared helper — see docs/decisions/README.md for
+// the incidents that made each one necessary in the first place (they're not
+// all in the same entry).
 
 // --- 1. Auto-cleanup listener binding ---
 //
@@ -39,7 +40,8 @@ export function unbind(el: HTMLElement): void {
 // separate field lists) with one. A background poll firing on a schedule
 // (every 20s) regardless of whether anything actually changed used to rewrite
 // innerHTML every time, which could destroy a row mid-click (see
-// docs/DECISIONS.md) and threw away in-progress state (e.g. scroll position)
+// docs/decisions/2026-08-23-listener-leak-unconditional-rerender.md) and threw
+// away in-progress state (e.g. scroll position)
 // for no reason on top of that.
 const signatures = new WeakMap<HTMLElement, string>();
 
@@ -57,7 +59,7 @@ export function shouldSkipRender(el: HTMLElement, signature: string, force = fal
 // The render-signature check above only lowers how *often* a background
 // render lands mid-gesture — it does not close the bug class, since real
 // quota numbers do change across a non-trivial fraction of the 20s polls in
-// normal use (see docs/DECISIONS.md, code review "Altitude" finding #3). If a
+// normal use (see docs/decisions/2026-08-23-listener-leak-unconditional-rerender.md). If a
 // user's mousedown-to-click on Switch/Remove straddles a poll that legitimately
 // has new data, the signature check no longer saves it: the element is
 // rewritten between mousedown and click, and — this is the actual browser

@@ -8,7 +8,7 @@
 // icon title, not a real email) got silently treated as the profile's email
 // node and overwritten. This check is safety-critical — it is what
 // report-identity trusts to decide which account's credentials to overwrite
-// (see docs/DECISIONS.md, "又一次账号损坏") — so it now exists in exactly one
+// (see docs/decisions/2026-08-23-account-corruption-guessing-broken.md) — so it now exists in exactly one
 // place all three call sites import.
 
 export const EMAIL_PATTERN = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;

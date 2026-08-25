@@ -9,6 +9,7 @@ import { restartAntigravityHub, startHubReaperLoop } from './hubRestart';
 import { log, LOG_FILE } from './logger';
 import { runCli, runCliJson, isKeychainActiveAvailable, detachActiveKeychainLogin, AGENT_HUB_DIST } from './cliRunner';
 import { readJsonBody, respondError, isAllowedOrigin } from './httpUtils';
+import { loadJsonFile, saveJsonFile } from './jsonStore';
 
 const execAsync = promisify(exec);
 const PORT = 63820;
@@ -22,11 +23,31 @@ function profileFileFor(accountId: string): string {
   return path.join(CREDENTIALS_DIR, `${encodeURIComponent(accountId)}.json`);
 }
 
+// O_NOFOLLOW on both the snapshot read here and the restore write below —
+// these are the actual OAuth credential files, a higher-value target for a
+// planted-symlink attack than the plain bookkeeping state jsonStore.ts
+// protects, so it would be backwards to leave these two functions unguarded.
+function readCredentialFile(filePath: string): Buffer {
+  const fd = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  try {
+    return fs.readFileSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 function snapshotProfiles(): Map<string, Buffer> {
   const snapshot = new Map<string, Buffer>();
   try {
     for (const name of fs.readdirSync(CREDENTIALS_DIR)) {
-      if (name.endsWith('.json')) snapshot.set(name, fs.readFileSync(path.join(CREDENTIALS_DIR, name)));
+      if (!name.endsWith('.json')) continue;
+      try {
+        snapshot.set(name, readCredentialFile(path.join(CREDENTIALS_DIR, name)));
+      } catch {
+        // a symlink or otherwise-unreadable entry just doesn't get backed up —
+        // restoreProfile() already treats "no snapshot for this account" as a
+        // no-op, not a hard failure, so this degrades safely.
+      }
     }
   } catch {
     // no directory yet — nothing to protect
@@ -41,8 +62,15 @@ function restoreProfile(accountId: string, snapshot: Map<string, Buffer>): boole
   const previous = snapshot.get(path.basename(file));
   if (!previous) return false;
   try {
-    if (fs.readFileSync(file).equals(previous)) return false;
-    fs.writeFileSync(file, previous, { mode: 0o600 });
+    if (readCredentialFile(file).equals(previous)) return false;
+    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+    const fd = fs.openSync(tmp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+    try {
+      fs.writeSync(fd, previous);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tmp, file);
     return true;
   } catch (e: any) {
     log('ADD_ACCOUNT', 'could not revert profile', accountId, e.message);
@@ -56,7 +84,7 @@ function restoreProfile(accountId: string, snapshot: Map<string, Buffer>): boole
 // naming an account as active while the Keychain held a different one. This is
 // the single chokepoint every "is this account currently active" decision in
 // this file should go through — a cached-route shortcut here is exactly what
-// destroyed an account once already (see docs/DECISIONS.md).
+// destroyed an account once already (see docs/decisions/2026-08-23-never-bare-connect-call.md).
 async function resolveActiveAccountId(): Promise<string | null> {
   try {
     const verified = await runCliJson(['route', '--verify', '--json']);
@@ -96,53 +124,69 @@ const HUB_TOKEN_FILE = path.join(os.homedir(), '.gemini', 'jetski-standalone-oau
 // alone is not enough: switching to any OTHER already-saved account also
 // changes it, and would be announced as a new account that was in the list all
 // along.
-// Shared by all three persisted stores below (pendingAdd, lastAddedAccountId,
-// knownPlans) — each used to hand-roll its own "read JSON from os.tmpdir(),
-// tolerate missing/corrupt file, write-or-rm" pair independently. `validate`
-// carries whatever back-compat/shape-checking each store still needs; this
-// only collapses the file-IO scaffold around it.
-function loadJsonFile<T>(file: string, validate: (parsed: any) => T | null): T | null {
-  try {
-    return validate(JSON.parse(fs.readFileSync(file, 'utf8')));
-  } catch {
-    return null;
-  }
+// loadJsonFile/saveJsonFile (atomic temp+rename write, symlink-safe — see
+// jsonStore.ts) are shared by all three persisted stores below (pendingAdd,
+// lastAddedAccountId, knownPlans); each used to hand-roll its own "read JSON
+// from os.tmpdir(), tolerate missing/corrupt file, write-or-rm" pair
+// independently. `validate` carries whatever back-compat/shape-checking each
+// store still needs.
+// Schema tags on every persisted shape below — adapted from agent-hub-
+// accounts' src/accounts/registry.ts, which tags each on-disk record with a
+// `schema` string and migrates or rejects by that tag rather than guessing
+// from whatever fields happen to be present. Only one version of each exists
+// so far, so this doesn't gate anything strictly yet; it exists so the next
+// real format change has an explicit marker to key a migration off instead of
+// another ad hoc "field X might be missing" check layered on top of the last
+// one (which is exactly how knownAccountIds' fallback below came to exist).
+const PENDING_ADD_SCHEMA = 'antigravity-accounts-enhancer.pending_add.v1';
+interface PendingAdd {
+  schema: typeof PENDING_ADD_SCHEMA;
+  backupAccountId: string;
+  startedAt: number;
+  knownAccountIds: string[];
 }
-
-function saveJsonFile(file: string, value: unknown, logTag: string, logContext: string): void {
-  try {
-    if (value !== null && value !== undefined) fs.writeFileSync(file, JSON.stringify(value));
-    else fs.rmSync(file, { force: true });
-  } catch (e: any) {
-    log(logTag, `could not persist ${logContext}`, e.message);
-  }
-}
-
-interface PendingAdd { backupAccountId: string; startedAt: number; knownAccountIds: string[] }
 const PENDING_ADD_FILE = path.join(os.tmpdir(), 'antigravity-accounts-enhancer-pending-add.json');
 const LAST_ADDED_FILE = path.join(os.tmpdir(), 'antigravity-accounts-enhancer-last-added.json');
 
 function loadPendingAdd(): PendingAdd | null {
   return loadJsonFile(PENDING_ADD_FILE, parsed => {
     if (!parsed?.backupAccountId) return null;
-    // knownAccountIds was added later; a file written by an older daemon has
-    // none, and an undefined array would throw the moment the watcher runs.
-    return { ...parsed, knownAccountIds: parsed.knownAccountIds ?? [parsed.backupAccountId] };
+    // A tagged schema this code doesn't recognize (e.g. a future v2 written
+    // by a newer daemon) is a real "don't guess" case, same spirit as the
+    // never-attribute-a-write rule elsewhere in this file — only a file with
+    // no tag at all (predates this field) gets the legacy fallback below.
+    if (parsed.schema !== undefined && parsed.schema !== PENDING_ADD_SCHEMA) return null;
+    // knownAccountIds (and, before this, the schema tag itself) were added
+    // later; a file from an older daemon has neither, so both get the same
+    // one-time fallback rather than two separate migration checks for what
+    // is really one "predates this shape" case.
+    return {
+      schema: PENDING_ADD_SCHEMA,
+      backupAccountId: parsed.backupAccountId,
+      startedAt: parsed.startedAt,
+      knownAccountIds: parsed.knownAccountIds ?? [parsed.backupAccountId],
+    };
   });
 }
 
-function setPendingAdd(value: PendingAdd | null): void {
-  pendingAdd = value;
-  saveJsonFile(PENDING_ADD_FILE, value, 'ADD_ACCOUNT', 'pending state');
+function setPendingAdd(value: Omit<PendingAdd, 'schema'> | null): void {
+  pendingAdd = value ? { schema: PENDING_ADD_SCHEMA, ...value } : null;
+  saveJsonFile(PENDING_ADD_FILE, pendingAdd, 'ADD_ACCOUNT', 'pending state');
 }
 
+const LAST_ADDED_SCHEMA = 'antigravity-accounts-enhancer.last_added.v1';
+
 function loadLastAddedAccountId(): string | null {
-  return loadJsonFile(LAST_ADDED_FILE, parsed => typeof parsed?.accountId === 'string' ? parsed.accountId : null);
+  return loadJsonFile(LAST_ADDED_FILE, parsed => {
+    if (typeof parsed?.accountId !== 'string') return null;
+    if (parsed.schema !== undefined && parsed.schema !== LAST_ADDED_SCHEMA) return null;
+    return parsed.accountId;
+  });
 }
 
 function setLastAddedAccountId(value: string | null): void {
   lastAddedAccountId = value;
-  saveJsonFile(LAST_ADDED_FILE, value ? { accountId: value } : null, 'ADD_ACCOUNT', 'last-added notification');
+  saveJsonFile(LAST_ADDED_FILE, value ? { schema: LAST_ADDED_SCHEMA, accountId: value } : null, 'ADD_ACCOUNT', 'last-added notification');
 }
 
 let pendingAdd: PendingAdd | null = loadPendingAdd();
@@ -156,16 +200,30 @@ let lastAddedAccountId: string | null = loadLastAddedAccountId();
 // anywhere in the schema). Same shape as the identity problem this project
 // already solved once: read it from the real DOM instead of guessing, and
 // persist it here so a later /api/accounts response can still show the plan
-// for an account that isn't the active one right now. See docs/DECISIONS.md,
-// "账号等级(Plan)".
-const PLAN_STORE_FILE = path.join(os.tmpdir(), 'antigravity-accounts-enhancer-plans.json');
+// for an account that isn't the active one right now. See
+// docs/decisions/2026-08-23-account-plan-tier.md.
+// Filename carries the version, not just the content: the pre-schema shape
+// was a bare {accountId: label} map, and this wrapped {schema, plans} shape
+// isn't just an added field on top of that (like PendingAdd/LastAddedAccountId
+// above) — it's a structural change, an older daemon's loadKnownPlans (which
+// only ever checked "is this an object") would happily treat the whole
+// {schema, plans} wrapper AS the plans map itself. Writing the new shape to a
+// brand new filename means an older binary reading the OLD filename never
+// sees it, and there's no legacy shape to migrate from under the new name —
+// the one-time cost is that plan data observed before this change doesn't
+// carry forward (it gets passively re-observed next time Settings is open).
+const PLAN_STORE_FILE = path.join(os.tmpdir(), 'antigravity-accounts-enhancer-plans-v1.json');
+const KNOWN_PLANS_SCHEMA = 'antigravity-accounts-enhancer.known_plans.v1';
 
 function loadKnownPlans(): Record<string, string> {
-  return loadJsonFile(PLAN_STORE_FILE, parsed => (parsed && typeof parsed === 'object') ? parsed : null) ?? {};
+  return loadJsonFile(PLAN_STORE_FILE, parsed => {
+    if (parsed?.schema === KNOWN_PLANS_SCHEMA && parsed.plans && typeof parsed.plans === 'object') return parsed.plans;
+    return null;
+  }) ?? {};
 }
 
 function saveKnownPlans(): void {
-  saveJsonFile(PLAN_STORE_FILE, knownPlans, 'PLAN', 'known plans');
+  saveJsonFile(PLAN_STORE_FILE, { schema: KNOWN_PLANS_SCHEMA, plans: knownPlans }, 'PLAN', 'known plans');
 }
 
 const knownPlans: Record<string, string> = loadKnownPlans();
@@ -195,7 +253,7 @@ let addAccountBeginInFlight = false;
 // accounts; a stale guess that happened to name an account that had since
 // been *removed* sailed straight through and got treated as a legitimate new
 // account — which is exactly how a real user's real sign-in got filed under a
-// dead account's name and destroyed it (see docs/DECISIONS.md).
+// dead account's name and destroyed it (see docs/decisions/2026-08-23-account-corruption-guessing-broken.md).
 //
 // Replaced with POST /api/add-account/report-identity: the frontend reads the
 // signed-in email directly out of Antigravity's own native Account panel DOM
@@ -211,7 +269,7 @@ const server = http.createServer(async (req, res) => {
   const allowed = isAllowedOrigin(origin);
 
   // Rejects outright rather than just reflecting the header — see
-  // isAllowedOrigin() in httpUtils.ts and docs/DECISIONS.md, "CORS 白名单策略".
+  // isAllowedOrigin() in httpUtils.ts and docs/decisions/cors-allowlist-policy.md.
   if (origin && !allowed) {
     log('REQ', req.method, req.url, `origin=${origin}`, 'REJECTED (origin not in allow-list)');
     respondError(res, 403, 'Origin not allowed');
@@ -292,7 +350,7 @@ const server = http.createServer(async (req, res) => {
 
         // Respond before restarting the hub — restarting reloads the calling
         // page itself; responding after would race the reload. See
-        // docs/DECISIONS.md, "Hub 重启:为什么改成整窗口 reload".
+        // docs/decisions/superseded-hub-restart-window-reload.md.
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(stdout);
 
@@ -388,7 +446,7 @@ const server = http.createServer(async (req, res) => {
         // session whose account no longer exists in the registry. Goes through
         // the same --verify chokepoint as begin()/connect() — a plain cached
         // `route` read here is exactly the bug class that already destroyed an
-        // account (see docs/DECISIONS.md): the hub rotates its OAuth token into
+        // account (see docs/decisions/credential-drift-explained.md): the hub rotates its OAuth token into
         // the shared Keychain slot on its own schedule, so cached "active" can
         // report the OLD account while the Keychain already holds a different
         // one's live credential.
@@ -466,7 +524,7 @@ const server = http.createServer(async (req, res) => {
         // Who to restore on cancel. With no exact match, fall back to whichever
         // account was last activated — but only if it actually has a saved
         // profile to restore from. Never used to attribute a *write*; that is
-        // the mistake that destroyed an account (see docs/DECISIONS.md).
+        // the mistake that destroyed an account (see docs/decisions/2026-08-23-never-bare-connect-call.md).
         let backupAccountId: string;
         if (exactMatch) {
           backupAccountId = exactMatch;

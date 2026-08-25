@@ -84,7 +84,7 @@ function positionBadge(badge: HTMLElement, trigger: HTMLElement): void {
 }
 
 // Independent badge overlaid on the native profile button's corner — never
-// intercepts its click. See docs/DECISIONS.md, "Profile 悬浮徽标".
+// intercepts its click. See docs/decisions/profile-hover-badge-no-intercept.md.
 function ensureProfileBadge(): void {
   const trigger = SemanticLocator.findProfileTrigger();
   if (!trigger) return;
@@ -153,7 +153,7 @@ AccountStore.fetchLiveAccounts();
 startAddAccountPromptLoop();
 
 // Read-only background poll so the ACTIVE badge doesn't go stale between
-// user actions — see docs/DECISIONS.md, "credential_drift".
+// user actions — see docs/decisions/credential-drift-explained.md.
 setInterval(() => {
   AccountStore.fetchLiveAccounts();
 }, 20000);

@@ -1,5 +1,5 @@
 // CDP-based UI injector — replaces the bridge.js `<script>` patch (CSP-blocked;
-// see docs/DECISIONS.md, "CDP 注入替代 bridge.js patch").
+// see docs/decisions/cdp-injection-vs-bridge-patch.md).
 
 import { log } from './logger';
 
@@ -86,7 +86,7 @@ export function startCdpInjectorLoop(intervalMs = 2000): void {
           // Timestamped (unlike a plain console.log) so it can be diffed
           // against [HUB_RESTART]/[SWITCH] timestamps to see how long a
           // fresh iframe took to appear and accept injection after a
-          // window reload — see docs/DECISIONS.md, "切换耗时".
+          // window reload — see docs/decisions/2026-08-22-switch-timing-instrumentation.md.
           log('CDP_INJECT', 'injected into', t.url);
         }
       } catch (e) {

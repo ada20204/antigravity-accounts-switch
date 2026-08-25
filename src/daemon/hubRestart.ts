@@ -4,7 +4,7 @@
 // Fast path: respawn the hub ourselves on the SAME port the old one used, then
 // reload just the content iframes — their URLs stay valid, so VS Code never has
 // to rebuild its window (~7s instead of ~30-36s). Falls back to a full window
-// reload if anything about that fails. See docs/DECISIONS.md, "Hub 重启".
+// reload if anything about that fails. See docs/decisions/2026-08-22-same-port-respawn-optimization.md.
 
 import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
@@ -14,6 +14,19 @@ const execAsync = promisify(exec);
 const CDP_BASE = 'http://127.0.0.1:9222';
 const GRACEFUL_EXIT_TIMEOUT_MS = 5000;
 const HUB_HEALTH_TIMEOUT_MS = 25000;
+// same-port-respawn's iframe reload settles in milliseconds — the default
+// grace an owned hub gets before the reaper will consider it orphaned.
+const IFRAME_RELOAD_GRACE_MS = 10_000;
+// The 'window' reloadStrategy path only awaits the CDP Page.reload command
+// being acked, not VS Code actually finishing rebuilding the workbench and
+// re-attaching a webview to the new hub's port — measured elsewhere in this
+// project at 20-30s (docs/decisions/2026-08-22-switch-timing-instrumentation.md).
+// Using the short grace period for this path let the reaper kill a hub an
+// in-progress add-account sign-in still needed, reproducing the exact bug
+// docs/decisions/2026-08-23-add-account-native-signin-missing.md exists to
+// fix. Generous margin above the measured worst case, not a tight bound —
+// reaping a genuinely idle hub 30-some seconds late is harmless.
+const WINDOW_RELOAD_GRACE_MS = 45_000;
 
 interface CdpTarget {
   id: string;
@@ -23,6 +36,23 @@ interface CdpTarget {
 }
 
 let restartInProgress = false;
+
+// Hubs we ourselves spawned (spawnHubOnSamePort), keyed by pid — see
+// reapOrphanedHubs() below for how this is used. In-memory only, not
+// persisted: a pid is only ever meaningful within the daemon run that
+// recorded it, and trusting a pid recovered from a prior run risks a totally
+// unrelated process having since reused that number. A daemon restart means
+// this starts empty again — reapOrphanedHubs()'s unowned-pid fallback path
+// is what covers hubs from before the restart, not this map.
+//
+// port is cached at spawn time (already known from HubSpec — no reason to
+// re-derive it later via readHubPort()'s `ps` spawn on every reaper tick).
+//
+// graceMs starts at IFRAME_RELOAD_GRACE_MS and gets bumped to
+// WINDOW_RELOAD_GRACE_MS by restartAntigravityHub() when it knows it's about
+// to take the 'window' reloadStrategy path — see the grace-period comment on
+// reapOrphanedHubs() for why the two paths need different windows.
+const ownedHubPids = new Map<number, { spawnedAt: number; port: number; graceMs: number }>();
 
 async function findHubPids(): Promise<number[]> {
   try {
@@ -123,6 +153,7 @@ async function spawnHubOnSamePort(spec: HubSpec): Promise<{ pid: number; healthy
     return null;
   }
   log('HUB_RESTART', `spawned replacement hub pid ${pid} on port ${spec.port}`);
+  ownedHubPids.set(pid, { spawnedAt: Date.now(), port: spec.port, graceMs: IFRAME_RELOAD_GRACE_MS });
 
   while (Date.now() - t0 < HUB_HEALTH_TIMEOUT_MS) {
     if (await probeHubHealth(spec.port)) {
@@ -131,7 +162,13 @@ async function spawnHubOnSamePort(spec: HubSpec): Promise<{ pid: number; healthy
     await sleep(150);
   }
 
-  log('HUB_RESTART', `replacement hub pid ${pid} never became healthy within ${HUB_HEALTH_TIMEOUT_MS}ms`);
+  log('HUB_RESTART', `replacement hub pid ${pid} never became healthy within ${HUB_HEALTH_TIMEOUT_MS}ms, killing it now`);
+  // Known for certain to be useless — no ambiguity to wait out, so this
+  // doesn't wait for the reaper's next tick (which previously left it
+  // squatting on spec.port for up to a reap cycle, risking a bind conflict
+  // for whatever tries that port next).
+  await terminateHub(pid, 'HUB_RESTART');
+  ownedHubPids.delete(pid);
   return null;
 }
 
@@ -157,29 +194,41 @@ async function waitForExit(pid: number, timeoutMs: number): Promise<boolean> {
   return !isAlive(pid);
 }
 
+// SIGTERM, wait for a graceful exit, escalate to SIGKILL if it doesn't —
+// shared by stopHubProcesses() (a full restart) and reapOrphanedHubs() (an
+// orphan the reaper found), so a wedged process gets the same forced-kill
+// treatment either way instead of the reaper settling for "sent SIGTERM,
+// hope for the best" and forgetting about it regardless of whether it
+// actually died.
+async function terminateHub(pid: number, logTag: string): Promise<'graceful' | 'forced' | 'failed'> {
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch (e: any) {
+    log(logTag, `SIGTERM failed for pid ${pid}`, e.message);
+    return 'failed';
+  }
+  const exited = await waitForExit(pid, GRACEFUL_EXIT_TIMEOUT_MS);
+  if (exited) {
+    log(logTag, `pid ${pid} exited gracefully`);
+    return 'graceful';
+  }
+  log(logTag, `pid ${pid} did not exit within ${GRACEFUL_EXIT_TIMEOUT_MS}ms, sending SIGKILL`);
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch {
+    // already gone
+  }
+  return 'forced';
+}
+
 async function stopHubProcesses(): Promise<{ pids: number[]; forcedKill: number[] }> {
   const pids = await findHubPids();
   const forcedKill: number[] = [];
   for (const pid of pids) {
     log('HUB_RESTART', `sending SIGTERM to hub pid ${pid}`);
-    try {
-      process.kill(pid, 'SIGTERM');
-    } catch (e: any) {
-      log('HUB_RESTART', `SIGTERM failed for pid ${pid}`, e.message);
-      continue;
-    }
-    const exited = await waitForExit(pid, GRACEFUL_EXIT_TIMEOUT_MS);
-    if (!exited) {
-      log('HUB_RESTART', `pid ${pid} did not exit within ${GRACEFUL_EXIT_TIMEOUT_MS}ms, sending SIGKILL`);
-      try {
-        process.kill(pid, 'SIGKILL');
-        forcedKill.push(pid);
-      } catch {
-        // already gone
-      }
-    } else {
-      log('HUB_RESTART', `pid ${pid} exited gracefully`);
-    }
+    const result = await terminateHub(pid, 'HUB_RESTART');
+    if (result === 'forced') forcedKill.push(pid);
+    ownedHubPids.delete(pid); // no-op if it was never ours; harmless either way
   }
   return { pids, forcedKill };
 }
@@ -298,37 +347,45 @@ async function reloadWorkbenchWindow(): Promise<boolean> {
 
 // Reaps hub processes nothing points at any more.
 //
-// Two hubs can legitimately coexist (see docs/DECISIONS.md, "同端口自行 respawn"):
+// Two hubs can legitimately coexist (see docs/decisions/2026-08-22-same-port-respawn-optimization.md):
 // ours on the original port serving the already-open webviews, plus one the
 // extension spawned on a fresh port when the user opened a new panel. Neither is
 // "the old one" — each serves different webviews, so killing by age would break
 // whichever one still had consumers. The only safe rule is "no iframe references
 // this port any more".
 //
-// Ownership is inferred from port numbers in CDP target URLs, not tracked
-// directly from the PID spawnHubOnSamePort() returns — there is no CDP-exposed
-// link from an iframe target back to which hub process serves its port other
-// than the port number itself. The two strike/count guards below exist because
-// of that (compensating for no direct ownership handle, not merely double-
-// checking one). Accepted tradeoff, reviewed 2026-08: if VS Code/CDP target URL
-// shapes ever change, this signal could go quietly wrong with no way for the
-// reaper to notice — low blast radius (worst case is a slightly wrong reap
-// decision on an already-idle hub, not touching an in-use one, given the
-// guards), so not worth a bigger rework unless that actually happens.
+// Two tiers, not one:
 //
-// Two guards against killing something still needed:
-//  - Requires two consecutive orphan sightings. The extension spawns its hub and
-//    only wires an iframe to it once waitForServerReady passes, so a single
-//    snapshot can catch a brand-new hub in that gap and wrongly call it orphaned.
-//  - Only ever reaps when more than one hub is running. A lone hub with no
-//    iframes is just an idle backend (user closed all Antigravity panels), which
-//    the extension legitimately keeps around — not our business to kill.
+//  - Owned (in ownedHubPids, populated by spawnHubOnSamePort): we know for
+//    certain we spawned these ourselves, so a lone owned hub with no iframes
+//    is unambiguously ours to reap regardless of how many other hubs exist —
+//    no need to infer anything. Grace period is "how long ago did we spawn
+//    it" rather than a sighting count, since the window strike-counting
+//    protects against (a hub the extension hasn't wired an iframe to yet)
+//    doesn't apply here: restartAntigravityHub() wires iframes to a hub it
+//    spawned itself, synchronously, before returning. The grace period is
+//    per-pid (see ownedHubPids' graceMs) because how long that actually takes
+//    depends on which reload path was used — the 'window' strategy's wait is
+//    much longer than an iframe reload's.
+//
+//  - Unowned (everything else findHubPids() returns): hubs the extension
+//    spawned itself, or ones this daemon owned in a run before its last
+//    restart. There is no direct ownership signal for these — the same
+//    "infer from CDP target URLs" the owned tier used to also rely on, with
+//    the same two compensating guards this file has always needed for that:
+//    two consecutive orphan sightings (single snapshot could catch one mid-
+//    startup, before the extension has wired an iframe to it) and only act
+//    when ≥2 hubs exist (a lone hub with no iframes might just be the
+//    extension's idle-but-wanted backend). Keeping this tier is what makes a
+//    daemon restart not lose reaping ability entirely — an earlier version
+//    of this function only ever looked at ownedHubPids, which starts empty
+//    on every boot.
 const orphanStrikes = new Map<number, number>();
 const ORPHAN_STRIKES_BEFORE_REAP = 2;
 
 async function reapOrphanedHubs(): Promise<void> {
   const pids = await findHubPids();
-  if (pids.length < 2) {
+  if (pids.length === 0) {
     orphanStrikes.clear();
     return;
   }
@@ -347,7 +404,35 @@ async function reapOrphanedHubs(): Promise<void> {
     if (match) referencedPorts.add(Number(match[1]));
   }
 
+  const now = Date.now();
+  const unownedPids: number[] = [];
+
   for (const pid of pids) {
+    const owned = ownedHubPids.get(pid);
+    if (!owned) {
+      unownedPids.push(pid);
+      continue;
+    }
+    if (!isAlive(pid)) {
+      ownedHubPids.delete(pid);
+      continue;
+    }
+    if (now - owned.spawnedAt < owned.graceMs) continue;
+    if (referencedPorts.has(owned.port)) continue;
+
+    log('HUB_REAP', `reaping orphaned hub pid ${pid} (port ${owned.port}, no webview references it, spawned by us)`);
+    await terminateHub(pid, 'HUB_REAP');
+    ownedHubPids.delete(pid);
+  }
+
+  if (unownedPids.length < 2) {
+    for (const pid of orphanStrikes.keys()) {
+      if (!unownedPids.includes(pid)) orphanStrikes.delete(pid);
+    }
+    return;
+  }
+
+  for (const pid of unownedPids) {
     const port = await readHubPort(pid);
     if (port === null || referencedPorts.has(port)) {
       orphanStrikes.delete(pid);
@@ -362,16 +447,12 @@ async function reapOrphanedHubs(): Promise<void> {
     }
 
     orphanStrikes.delete(pid);
-    log('HUB_REAP', `reaping orphaned hub pid ${pid} (port ${port}, no webview references it)`);
-    try {
-      process.kill(pid, 'SIGTERM');
-    } catch (e: any) {
-      log('HUB_REAP', `SIGTERM failed for pid ${pid}`, e.message);
-    }
+    log('HUB_REAP', `reaping orphaned hub pid ${pid} (port ${port}, no webview references it, unowned)`);
+    await terminateHub(pid, 'HUB_REAP');
   }
 
   for (const pid of orphanStrikes.keys()) {
-    if (!pids.includes(pid)) orphanStrikes.delete(pid);
+    if (!unownedPids.includes(pid)) orphanStrikes.delete(pid);
   }
 }
 
@@ -401,7 +482,7 @@ export interface HubRestartResult {
   // mutation itself may have succeeded but the caller has no live UI
   // reflecting it — begin() must treat this as a failure too, not just
   // onStoppedError, or it reports a signed-out state whose sign-in page
-  // never actually appears. See docs/DECISIONS.md, "添加账号原生登录页不出现".
+  // never actually appears. See docs/decisions/2026-08-23-add-account-native-signin-missing.md.
   reloadFailed?: boolean;
   timingMs: { stopHub: number; hubHealthy: number; reload: number; total: number };
 }
@@ -429,7 +510,7 @@ export async function restartAntigravityHub(
   // plain iframe reload only refreshes webview content, but the extension
   // host never learns the hub was replaced, so its own "no hub / show
   // sign-in" detection never fires and the native login screen doesn't
-  // appear — see docs/DECISIONS.md, "添加账号原生登录页不出现". Regular
+  // appear — see docs/decisions/2026-08-23-add-account-native-signin-missing.md. Regular
   // switch() doesn't need this: credentials are still valid, so refreshed
   // webview content is all that's required.
   options?: { reloadStrategy?: 'iframe' | 'window' }
@@ -480,6 +561,10 @@ export async function restartAntigravityHub(
         let detail: string;
         let reloadFailed = false;
         if (options?.reloadStrategy === 'window') {
+          // See WINDOW_RELOAD_GRACE_MS — this path's actual settle time is
+          // VS Code's own rebuild, not the CDP command's ack.
+          const owned = ownedHubPids.get(spawned.pid);
+          if (owned) owned.graceMs = WINDOW_RELOAD_GRACE_MS;
           const windowReloaded = await reloadWorkbenchWindow();
           reloadFailed = !windowReloaded;
           detail = `respawned hub on port ${spec.port} (pid ${spawned.pid}), ${windowReloaded ? 'reloaded VS Code window' : 'FAILED to reload window — extension host may still think the old hub is running'}`;
