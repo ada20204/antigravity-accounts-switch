@@ -2,6 +2,21 @@ import { ProfileSyncAdapter } from '../adapters/profileSyncAdapter';
 import { showConfirm, showAlert } from '../ui/confirmDialog';
 import { showProgress } from '../ui/progressOverlay';
 
+// agent-hub-accounts schema v3: `quota.groups` is an array of named groups
+// (e.g. "Gemini Models", "Claude and GPT models"), each with a `buckets`
+// array carrying a stable `id` per window (e.g. "gemini-weekly", "gemini-5h")
+// instead of the old fixed {gemini: {weekly, five_hour}} keys — a bucket can
+// be absent entirely for a given account (seen live: free-tier accounts have
+// no "gemini-5h" bucket at all), so this returns null rather than 0 for "not
+// present", same as the old optional-chained lookup it replaces.
+function findQuotaBucket(groups: any[] | undefined, bucketId: string): number | null {
+  for (const group of groups ?? []) {
+    const bucket = group.buckets?.find((b: any) => b.id === bucketId);
+    if (bucket?.remaining_fraction != null) return bucket.remaining_fraction;
+  }
+  return null;
+}
+
 export interface SubscriptionAccount {
   id: string;
   name: string;
@@ -52,15 +67,24 @@ export class AccountStore {
         const data = await res.json();
         const colors = ['#688e57', '#3b58cc', '#b5a999', '#a6334f', '#2e8b57', '#f6b26b'];
         const accounts: SubscriptionAccount[] = (data.accounts || []).map((acc: any, idx: number) => {
-          const gemWeekly = acc.groups?.gemini?.weekly?.remaining_fraction != null ? Math.round(acc.groups.gemini.weekly.remaining_fraction * 100) : null;
-          const gem5h = acc.groups?.gemini?.five_hour?.remaining_fraction != null ? Math.round(acc.groups.gemini.five_hour.remaining_fraction * 100) : null;
+          // Schema v3 (`agent_hub.account_list.v3`, replacing the v2 `route`
+          // shape this used to read — route is now a deprecated cache-only
+          // alias with a different, incompatible schema, an upstream
+          // agent-hub-accounts change): quota moved under `acc.quota`, the
+          // fixed {gemini, other} keys became an array of named groups each
+          // with a `buckets` array, and `active` was renamed `is_active`.
+          const gemWeeklyFraction = findQuotaBucket(acc.quota?.groups, 'gemini-weekly');
+          const gem5hFraction = findQuotaBucket(acc.quota?.groups, 'gemini-5h');
+          const gemWeekly = gemWeeklyFraction != null ? Math.round(gemWeeklyFraction * 100) : null;
+          const gem5h = gem5hFraction != null ? Math.round(gem5hFraction * 100) : null;
           // Whichever limit is closer to running out is the one that will
           // actually block you, so the headline number is the lower of the two.
           // Showing five-hour alone made every account read "100%" (it refills
           // constantly) while the weekly figures that actually differed between
           // accounts stayed invisible — useless for picking one to switch to.
           const known = [gem5h, gemWeekly].filter((v): v is number => v != null);
-          const quota = known.length > 0 ? Math.min(...known) : (acc.issue ? 0 : 100);
+          const issue = acc.quota?.issue ?? null;
+          const quota = known.length > 0 ? Math.min(...known) : (issue ? 0 : 100);
 
           return {
             id: acc.account_id,
@@ -68,9 +92,9 @@ export class AccountStore {
             plan: acc.plan ?? 'Unknown',
             quotaPercent: quota,
             color: colors[idx % colors.length],
-            isActive: Boolean(acc.active), // schema v2 field is `active`, not `current` — see docs/decisions/credential-drift-explained.md
+            isActive: Boolean(acc.is_active),
             tokenMask: '••••••••',
-            issue: acc.issue ?? (acc.credential_drift ? 'credential_drift' : null),
+            issue: issue ?? (acc.credential_drift ? 'credential_drift' : null),
             geminiWeekly: gemWeekly || 0,
             gemini5h: gem5h || 0
           };

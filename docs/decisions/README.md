@@ -2,6 +2,8 @@
 
 为什么这么做、试过但失败的方案、以及失败的证据——按主题查,不用整份翻。新的在前;标 `(已被取代)`/`(历史)` 的仅供追溯,结论以后出现的同主题条目为准。
 
+- [多账号消失:agent-hub-accounts 把 route 废弃、换了 schema](./2026-08-25-route-schema-break.md) — 数据没丢,是上游 CLI 把 `route` 降级成废弃别名、schema 换了(`accounts`→`results`、`active`→`is_active`),`daemon.ts`/`accountStore.ts` 改用 `list`/`current --verify`。
+
 - [Review 复查:借鉴 agent-hub-accounts 那批改动的 14 条发现全部修复](./2026-08-25-review-14-findings-fixed.md) — 最严重的一条:reaper 宽限期没算上整窗口 reload 的真实耗时,可能杀掉添加账号流程正在用的 hub;`knownPlans` 文件名加版本号避免新旧 daemon 混跑互相破坏数据;symlink 检查改成原子 `O_NOFOLLOW`。
 - [从 agent-hub-accounts 借鉴的 4 个设计](./2026-08-25-agent-hub-accounts-patterns-adopted.md) — 持久化 JSON 原子写+防符号链接;hub 归属从 CDP target 反推改成直接持有 pid;状态加 schema 版本标记;结构门限写成 `npm test`。
 - [DECISIONS.md 拆成 docs/decisions/](./2026-08-24-decisions-doc-split.md) — 按用户提供的 project-structure 规则,单文件 501 行/28 主题过了"扁平化够用"的门槛,拆成一条一份 + 本索引;代码里 43 处指针全部改指向具体新文件。

@@ -85,10 +85,16 @@ function restoreProfile(accountId: string, snapshot: Map<string, Buffer>): boole
 // the single chokepoint every "is this account currently active" decision in
 // this file should go through — a cached-route shortcut here is exactly what
 // destroyed an account once already (see docs/decisions/2026-08-23-never-bare-connect-call.md).
+//
+// `route` was `current`'s predecessor in agent-hub-accounts and is now a
+// deprecated cache-only alias that no longer accepts `--verify` at all (a
+// live upstream change, not something this project did) — `current --verify`
+// is the direct replacement, and its schema renamed the `active` field to
+// `is_active`.
 async function resolveActiveAccountId(): Promise<string | null> {
   try {
-    const verified = await runCliJson(['route', '--verify', '--json']);
-    return (verified.accounts || []).find((a: any) => a.active)?.account_id ?? null;
+    const verified = await runCliJson(['current', '--verify', '--json']);
+    return (verified.accounts || []).find((a: any) => a.is_active)?.account_id ?? null;
   } catch {
     return null;
   }
@@ -306,10 +312,22 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (url.pathname === '/api/accounts' && req.method === 'GET') {
-      const stdout = await runCli(['route', '--json']);
+      // `route --json` is agent-hub-accounts' now-deprecated cache-only alias
+      // (a live upstream change): it still runs, but returns a different
+      // schema (`agent_hub.account_quota_batch.v2`, a `results` array with no
+      // `active`/`accounts` fields at all) — silently parsed here as "zero
+      // accounts" before this fix, since `parsed.accounts` was just
+      // `undefined`. `list --json` (`agent_hub.account_list.v3`) is the
+      // current replacement; runtime/services/accountStore.ts's parsing was
+      // updated to match its shape in the same change.
+      const stdout = await runCli(['list', '--json']);
       const parsed = JSON.parse(stdout);
       for (const acc of parsed.accounts ?? []) {
-        acc.plan = knownPlans[acc.account_id] ?? null;
+        // Prefer our own DOM-observed value (persists across whichever
+        // account was actually visible in Settings), but the CLI now reports
+        // a tier itself — fall back to it instead of 'Unknown' for an
+        // account we've never had open in Settings.
+        acc.plan = knownPlans[acc.account_id] ?? acc.quota?.user_tier?.name ?? null;
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(parsed));
@@ -495,10 +513,18 @@ const server = http.createServer(async (req, res) => {
         // provably belongs to. Plain `route`/`current` answer from cache and
         // have been seen naming an account active while the Keychain held a
         // different credential entirely.
-        const verified = await runCliJson(['route', '--verify', '--json']);
-        const verifiedAccounts = verified.accounts || [];
-        const knownAccountIds: string[] = verifiedAccounts.map((a: any) => a.account_id);
-        const exactMatch: string | undefined = verifiedAccounts.find((a: any) => a.active)?.account_id;
+        //
+        // Two calls, not one: `route --verify` used to return both the full
+        // roster and the verified-active flag together, but `route` is now a
+        // deprecated cache-only alias that doesn't accept `--verify` at all
+        // (a live upstream agent-hub-accounts change). `list --json` is the
+        // roster; `current --verify --json` is the verified-active check —
+        // it only ever returns the currently-active account(s), not the
+        // roster, which is why this needs both instead of one.
+        const roster = await runCliJson(['list', '--json']);
+        const knownAccountIds: string[] = (roster.accounts || []).map((a: any) => a.account_id);
+        const verifiedCurrent = await runCliJson(['current', '--verify', '--json']);
+        const exactMatch: string | undefined = (verifiedCurrent.accounts || []).find((a: any) => a.is_active)?.account_id;
 
         if (knownAccountIds.length === 0) {
           throw new Error('There are no saved accounts to fall back to, so signing out would leave you with no way back.');
