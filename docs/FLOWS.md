@@ -52,7 +52,7 @@
 
 1. 点账号行 → 确认框
 2. 盖上进度遮罩("Switching to X…")
-3. `POST /api/switch` → `agent-hub-accounts switch <id>`(**只写 Keychain**,约 150ms)
+3. `POST /api/switch` → 进程内调用 vendor 进来的 `switchAccount()`(**只写 Keychain**)——不再经过单独的 `agent-hub-accounts` 子进程,但底层仍要 `spawnSync('/usr/bin/security', ...)`;vendor 之后没有重新实测过具体耗时,只确定比原来"~150ms(含一次完整 node 子进程启动开销)"更快,不知道快多少
 4. **daemon 先回响应,再重启 hub** —— 重启会重载发起请求的那个页面,先重启会把响应掐断,前端会误判失败并回滚一个其实已经成功的切换
 5. 重启:SIGTERM 旧 hub → 等退出 → 在**同一端口**拉起新 hub → reload 内容 iframe(约 7s,其中 ~6s 是 hub 冷启动)
 6. iframe 重载 = 完成信号,遮罩随文档一起消失

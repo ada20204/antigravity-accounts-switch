@@ -424,7 +424,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
           const tSwitchStart = Date.now();
           const output = withFileLock(accountPaths.switchLockPath, () => accountService.switchAccount(accountId));
-          const cliMs = Date.now() - tSwitchStart;
+          // No longer "cliMs" — this used to be a subprocess spawn
+          // (agent-hub-accounts switch <id>), now an in-process call that
+          // still shells out to /usr/bin/security internally (keychain.ts).
+          // See docs/decisions/2026-08-26-vendor-agent-hub-accounts.md.
+          const switchMs = Date.now() - tSwitchStart;
           log('SWITCH', 'succeeded', accountId);
 
           // Respond before restarting the hub — restarting reloads the calling
@@ -441,12 +445,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           log('SWITCH', 'hub restart result:', hubRestart.detail);
           log('TIMING', 'switch', accountId, {
             strategy: hubRestart.strategy,
-            cliMs,
+            switchMs,
             hubStopMs: hubRestart.timingMs.stopHub,
             hubHealthyMs: hubRestart.timingMs.hubHealthy,
             reloadMs: hubRestart.timingMs.reload,
             hubRestartTotalMs: hubRestart.timingMs.total,
-            grandTotalMs: cliMs + hubRestart.timingMs.total,
+            grandTotalMs: switchMs + hubRestart.timingMs.total,
           });
         } catch (e: any) {
           log('SWITCH', 'FAILED', e.message);
