@@ -31,7 +31,7 @@
     "package": "vsce package --no-dependencies --no-rewrite-relative-links --allow-missing-repository",
     "patch": "node scripts/patch.mjs",
     "unpatch": "node scripts/unpatch.mjs",
-    "test": "node --test test/*.test.mjs"
+    "test": "npm run compile && node --test test/*.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

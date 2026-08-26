@@ -2,10 +2,11 @@
 
 为什么这么做、试过但失败的方案、以及失败的证据——按主题查,不用整份翻。新的在前;标 `(已被取代)`/`(历史)` 的仅供追溯,结论以后出现的同主题条目为准。
 
+- [把 agent-hub-accounts 的账号管理核心搬进本仓库,不再要求用户单独装它](./2026-08-26-vendor-agent-hub-accounts.md) — vendor 约 1500 行零依赖代码进 `src/daemon/accounts/`,存储路径实测和真实安装的 CLI 逐字节一致(含对 137 代真实注册表的只读 golden-diff 验证);调用统一走 `manager.ts` 的双重校验层,不直接摸 `keychain.ts` 原始方法;`finish` 端点不再退化到已验证结构性坏掉的猜测逻辑;`extension.ts` 里一份重复实现凭证文件格式的代码顺带删掉。`cliRunner.ts` 整个移除。
 - [弹窗/Settings 卡片拼 innerHTML 没转义,plan 字段几乎不做校验](./2026-08-26-unescaped-account-fields-in-innerhtml.md) — 团队架构评审发现:`acc.name`/`acc.plan`/`acc.issue`/`acc.id` 直接拼进 `innerHTML`,`/api/report-plan` 的 `label` 几乎不做校验,本机任意网页理论上能借此在真实 webview 里跑脚本;加了 `escapeHtml()` 转义 + 接口侧类型/长度/保留键校验。
 - [begin() 检查能不能 reload,要放在摘凭证之前,不是之后](./2026-08-26-window-reload-precheck.md) — 团队架构评审发现:多于一个 workbench 窗口时 `findWorkbenchPageTarget()` 会拒绝猜,但这个检查原来发生在 `onStopped`(真正登出)跑完之后,导致用户已被登出、`pendingAdd` 却没写入——和已回退的 extension-host-restart 实验是同一失败类别,这次靠正常多窗口使用就能必现;改成先检查能不能 reload,再动 hub/凭证。
 - [前端写死了 63820,多窗口下会连到别的窗口的 daemon](./2026-08-26-daemon-port-was-hardcoded.md) — 团队架构评审发现:`accountStore.ts` 的 daemon 地址是写死常量,而端口其实按窗口各自分配;第二个窗口的每次操作都会打到第一个窗口的 daemon。改成从注入时写入的全局变量读取。
-- [cliRunner.ts 写死的 keychain.js 路径已经过期](./2026-08-26-cliRunner-stale-keychain-path.md) — agent-hub-accounts 自己重构挪了模块位置,我们没同步,导致 `isKeychainActiveAvailable()` 静默假装已登录、`detachActiveKeychainLogin()` 每次必炸,添加账号流程直接在第一步失败;路径修对,耦合本身没解决(见 `docs/ISSUES.md`)。
+- [(已被取代)cliRunner.ts 写死的 keychain.js 路径已经过期](./2026-08-26-cliRunner-stale-keychain-path.md) — agent-hub-accounts 自己重构挪了模块位置,我们没同步,导致 `isKeychainActiveAvailable()` 静默假装已登录、`detachActiveKeychainLogin()` 每次必炸,添加账号流程直接在第一步失败;当时只是把路径修对,耦合本身没解决——`cliRunner.ts` 连同这个耦合已在 [`2026-08-26-vendor-agent-hub-accounts.md`](./2026-08-26-vendor-agent-hub-accounts.md) 里整个移除。
 - [实验(已失败,已回退):添加账号的整窗口 reload 能不能换成"重启 extension host"](./2026-08-26-extension-host-restart-experiment.md) — 现场测试:`workbench.action.restartExtensionHost` 触发的进程销毁比 `begin()` 写入 backup 账号记录还快,导致用户被留在登出状态且没有可恢复的记录(已手动切回,凭据没丢)。顺带修了一个独立 bug:rescue banner 一旦渲染就再也不更新,账号列表从 0 变到非 0 之后按钮不会补上。
 - [添加账号流程的状态为什么落盘,knownAccountIds 是干什么的](./add-account-state-persistence.md) — pendingAdd/lastAddedAccountId 必须落盘(daemon/extension host 都可能重启),knownAccountIds 用来区分"新账号登录"和"换到另一个已保存账号";顺带收了横幅为什么只在主面板显示、轮询频率为什么自适应这两条(原来散落在 FLOWS.md)。
 - [Hub 回收器为什么分两层(owned/unowned)](./hub-reaper-two-tier-ownership.md) — owned 精确快速回收,unowned 靠连续两次孤立观测+至少两个 hub 同时存在才动手,两层加起来才不会在 daemon 重启后丢失回收能力。

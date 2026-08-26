@@ -1,4 +1,9 @@
-# cliRunner.ts 里写死的 keychain.js 路径已经过期,导致添加账号一直失败
+# (已被取代)cliRunner.ts 里写死的 keychain.js 路径已经过期,导致添加账号一直失败
+
+> `cliRunner.ts` 连同这里描述的耦合已在
+> [`2026-08-26-vendor-agent-hub-accounts.md`](./2026-08-26-vendor-agent-hub-accounts.md)
+> 里整个移除——不再 `require()` agent-hub-accounts 的任何内部模块,`activeAvailable`/
+> `detachActive` 直接调用 vendor 进来的 `keychain.ts`。这份记录只作历史追溯。
 
 ## 现象
 

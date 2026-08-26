@@ -19,7 +19,7 @@ import { promisify } from 'util';
 import { startCdpInjectorLoop } from './cdpInjector';
 import { restartAntigravityHub, startHubReaperLoop, setOwnWorkspacePaths } from './hubRestart';
 import { log, LOG_FILE, configureLogger } from './logger';
-import { runCli, runCliJson, isKeychainActiveAvailable, detachActiveKeychainLogin, AGENT_HUB_DIST } from './cliRunner';
+import { accountService, registry, keychain, withFileLock, paths as accountPaths } from './accounts';
 import { readJsonBody, respondError, isAllowedOrigin } from './httpUtils';
 import { loadJsonFile, saveJsonFile } from './jsonStore';
 
@@ -40,83 +40,17 @@ const STATIC_CONTENT_TYPES: Record<string, string> = {
   '/style.css': 'text/css',
 };
 
-// Saved credential profiles, keyed by file name. Small JSON files, and only
-// read around a capture, so holding them in memory briefly is cheap.
-const CREDENTIALS_DIR = path.join(os.homedir(), '.agent-hub', 'plugins', 'accounts', 'state', 'credentials');
-
-function profileFileFor(accountId: string): string {
-  // agent-hub-accounts percent-encodes the address for the file name.
-  return path.join(CREDENTIALS_DIR, `${encodeURIComponent(accountId)}.json`);
-}
-
-// O_NOFOLLOW on both the snapshot read here and the restore write below —
-// these are the actual OAuth credential files, a higher-value target for a
-// planted-symlink attack than the plain bookkeeping state jsonStore.ts
-// protects, so it would be backwards to leave these two functions unguarded.
-function readCredentialFile(filePath: string): Buffer {
-  const fd = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-  try {
-    return fs.readFileSync(fd);
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
-function snapshotProfiles(): Map<string, Buffer> {
-  const snapshot = new Map<string, Buffer>();
-  try {
-    for (const name of fs.readdirSync(CREDENTIALS_DIR)) {
-      if (!name.endsWith('.json')) continue;
-      try {
-        snapshot.set(name, readCredentialFile(path.join(CREDENTIALS_DIR, name)));
-      } catch {
-        // a symlink or otherwise-unreadable entry just doesn't get backed up —
-        // restoreProfile() already treats "no snapshot for this account" as a
-        // no-op, not a hard failure, so this degrades safely.
-      }
-    }
-  } catch {
-    // no directory yet — nothing to protect
-  }
-  return snapshot;
-}
-
-// Returns true only if the file actually changed and was put back, so callers
-// can tell "this capture overwrote something" from "this capture was a no-op".
-function restoreProfile(accountId: string, snapshot: Map<string, Buffer>): boolean {
-  const file = profileFileFor(accountId);
-  const previous = snapshot.get(path.basename(file));
-  if (!previous) return false;
-  try {
-    if (readCredentialFile(file).equals(previous)) return false;
-    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-    const fd = fs.openSync(tmp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
-    try {
-      fs.writeSync(fd, previous);
-    } finally {
-      fs.closeSync(fd);
-    }
-    fs.renameSync(tmp, file);
-    return true;
-  } catch (e: any) {
-    log('ADD_ACCOUNT', 'could not revert profile', accountId, e.message);
-    return false;
-  }
-}
-
 // Which saved account the live credential actually belongs to, or null if it
-// belongs to none of them. `--verify` byte-compares the Keychain against every
-// saved profile; plain `route`/`current` answer from cache and have been seen
+// belongs to none of them. `verifiedOverview` byte-compares the Keychain
+// against every saved profile; the plain (cached) overview has been seen
 // naming an account as active while the Keychain held a different one. This is
 // the single chokepoint every "is this account currently active" decision in
-// this file should go through — a cached-route shortcut here is exactly what
+// this file should go through — a cached shortcut here is exactly what
 // destroyed an account once already (see docs/decisions/2026-08-23-never-bare-connect-call.md).
-// Uses `current --verify`, not the deprecated `route` — see
-// docs/decisions/2026-08-25-route-schema-break.md.
 async function resolveActiveAccountId(): Promise<string | null> {
   try {
-    const verified = await runCliJson(['current', '--verify', '--json']);
-    return (verified.accounts || []).find((a: any) => a.is_active)?.account_id ?? null;
+    const verified = accountService.verifiedOverview('antigravity-cli');
+    return verified.accounts.find(a => a.is_active)?.account_id ?? null;
   } catch {
     return null;
   }
@@ -246,7 +180,7 @@ function releaseBeginLock(): void {
 // none of the injection risk the execFile-based JSON endpoints had to be
 // fixed for.
 function buildLoginTerminalScript(port: number): string {
-  const cli = JSON.stringify(path.join(AGENT_HUB_DIST, 'cli.js'));
+  const cli = JSON.stringify(path.join(__dirname, 'accounts', 'loginCli.js'));
   return [
     '#!/bin/bash',
     'set -o pipefail',
@@ -278,20 +212,34 @@ function buildLoginTerminalScript(port: number): string {
     'fi',
     'echo',
     'echo "Step 3/3: saving the new account..."',
-    `node ${cli} connect`,
-    'if [ $? -eq 0 ]; then',
+    // Bare `connect` can no longer guess the new account's email (that
+    // guesser was verified structurally broken for this project's hub setup
+    // — see docs/decisions/2026-08-23-account-corruption-guessing-broken.md
+    // and docs/decisions/2026-08-26-vendor-agent-hub-accounts.md), so this
+    // step needs the email explicitly instead of silently mis-saving it.
+    'echo "Enter the Google account email you just signed in with:"',
+    'read -r NEW_EMAIL',
+    'if [ -z "$NEW_EMAIL" ]; then',
     '  echo',
-    '  echo "Applying the new account to the running Antigravity session..."',
+    '  echo "No email entered — nothing was saved. Re-run this script, or use the"',
+    '  echo "in-app Add new account flow instead (it reads the email automatically)."',
+    'else',
+    `  node ${cli} connect "\$NEW_EMAIL"`,
+    '  if [ $? -eq 0 ]; then',
+    '    echo',
+    '    echo "Applying the new account to the running Antigravity session..."',
     // Without this the sign-in leaves the new account active in the
     // Keychain while the running hub keeps serving the old one.
-    `  curl -s -X POST http://127.0.0.1:${port}/api/hub-restart >/dev/null 2>&1 || echo "  (could not reach the accounts daemon — restart VS Code to apply)"`,
-    '  echo',
-    '  echo "Done. The new account is now available in Antigravity."',
-    '  echo',
-    `  node ${cli} list`,
-    'else',
-    '  echo',
-    '  echo "Sign-in worked but saving it failed. Run: agent-hub-accounts connect"',
+    `    curl -s -X POST http://127.0.0.1:${port}/api/hub-restart >/dev/null 2>&1 || echo "    (could not reach the accounts daemon — restart VS Code to apply)"`,
+    '    echo',
+    '    echo "Done. The new account is now available in Antigravity."',
+    '    echo',
+    `    node ${cli} list`,
+    '  else',
+    '    echo',
+    '    echo "Sign-in worked but saving it failed. Re-run this script, or use the"',
+    '    echo "in-app Add new account flow instead."',
+    '  fi',
     'fi',
     'echo',
     'echo "Press Return to close this window."',
@@ -427,10 +375,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     try {
       if (url.pathname === '/api/accounts' && req.method === 'GET') {
-        // `list`, not the deprecated `route` — see
-        // docs/decisions/2026-08-25-route-schema-break.md.
-        const stdout = await runCli(['list', '--json']);
-        const parsed = JSON.parse(stdout);
+        const parsed: any = accountService.overview('');
         for (const acc of parsed.accounts ?? []) {
           // Prefer our own DOM-observed value (persists across whichever
           // account was actually visible in Settings), but the CLI now reports
@@ -478,18 +423,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           log('SWITCH', 'requested', accountId);
 
           const tSwitchStart = Date.now();
-          const stdout = await runCli(['switch', accountId, '--json']);
+          const output = withFileLock(accountPaths.switchLockPath, () => accountService.switchAccount(accountId));
           const cliMs = Date.now() - tSwitchStart;
-          // Not the raw CLI JSON — reaching this line without throwing already
-          // means it succeeded, and TIMING right below covers the outcome in
-          // structured form. A 300-char raw dump here was pure duplication.
-          log('SWITCH', 'cli succeeded', accountId);
+          log('SWITCH', 'succeeded', accountId);
 
           // Respond before restarting the hub — restarting reloads the calling
           // page itself; responding after would race the reload. See
           // docs/decisions/superseded-hub-restart-window-reload.md.
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(stdout);
+          res.end(JSON.stringify(output));
 
           const hubRestart = await restartAntigravityHub();
           // .detail is already the purpose-built human summary (strategy +
@@ -554,10 +496,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             return;
           }
 
-          const stdout = await runCli(['connect', targetId, '--json']);
+          const captured = withFileLock(accountPaths.switchLockPath, () => accountService.capture(targetId, targetId, true));
           log('CONNECT', 'captured', targetId);
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(stdout);
+          res.end(JSON.stringify(captured));
         } catch (e: any) {
           respondError(res, 500, e.message);
         }
@@ -579,10 +521,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           }
 
           log('REMOVE', 'requested', accountId);
-          const stdout = await runCli(['remove', accountId, '--confirm', accountId, '--json']);
-          log('REMOVE', 'succeeded', accountId, stdout.slice(0, 200));
+          let credentialRemoved = false;
+          const mutation = withFileLock(accountPaths.switchLockPath, () => registry.remove(accountId, accountId, false, (profile) => {
+            credentialRemoved = profile.auth_kind === 'oauth-subscription' && profile.credential_source === 'agy-profile'
+              ? keychain.remove(accountId)
+              : false;
+          }));
+          const output = {
+            schema: 'agent_hub.account_mutation.v2', action: 'remove',
+            generation: mutation.generation, profile: mutation.result.profile,
+            removed: true, cleared_default: mutation.result.cleared_default, credential_removed: credentialRemoved,
+          };
+          log('REMOVE', 'succeeded', accountId);
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(stdout);
+          res.end(JSON.stringify(output));
         } catch (e: any) {
           log('REMOVE', 'FAILED', e.message);
           respondError(res, 500, e.message);
@@ -616,13 +568,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           // have been seen naming an account active while the Keychain held a
           // different credential entirely.
           //
-          // Two calls, not one: `list` is the roster, `current --verify` only
-          // ever returns the active account(s), not the roster — see
-          // docs/decisions/2026-08-25-route-schema-break.md.
-          const roster = await runCliJson(['list', '--json']);
-          const knownAccountIds: string[] = (roster.accounts || []).map((a: any) => a.account_id);
-          const verifiedCurrent = await runCliJson(['current', '--verify', '--json']);
-          const exactMatch: string | undefined = (verifiedCurrent.accounts || []).find((a: any) => a.is_active)?.account_id;
+          const roster = accountService.overview('antigravity-cli');
+          const knownAccountIds: string[] = roster.accounts.map(a => a.account_id);
+          const verifiedCurrent = accountService.verifiedOverview('antigravity-cli');
+          const exactMatch = verifiedCurrent.accounts.find(a => a.is_active)?.account_id;
 
           if (knownAccountIds.length === 0) {
             throw new Error('There are no saved accounts to fall back to, so signing out would leave you with no way back.');
@@ -639,7 +588,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           // credential anyway: `cancel` runs `switch <id>`, which activates the
           // saved profile. A slightly older saved token still works.
           if (exactMatch) {
-            await runCli(['connect', exactMatch, '--json']);
+            withFileLock(accountPaths.switchLockPath, () => accountService.capture(exactMatch, exactMatch, true));
             log('ADD_ACCOUNT', 'refreshed backup for', exactMatch);
           } else {
             log('ADD_ACCOUNT', 'live credential matches no saved profile (token likely rotated); keeping existing backup');
@@ -653,8 +602,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           if (exactMatch) {
             backupAccountId = exactMatch;
           } else {
-            const current = await runCliJson(['current', '--json']);
-            const lastActivated: string | undefined = (current.accounts || [])[0]?.account_id;
+            const current = accountService.overview('antigravity-cli').accounts.filter(a => a.is_active);
+            const lastActivated: string | undefined = current[0]?.account_id;
             backupAccountId = lastActivated && knownAccountIds.includes(lastActivated)
               ? lastActivated
               : knownAccountIds[0];
@@ -675,7 +624,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               fs.rmSync(HUB_TOKEN_FILE);
               log('ADD_ACCOUNT', 'cleared cached hub session');
             }
-            await detachActiveKeychainLogin();
+            keychain.detachActive();
             log('ADD_ACCOUNT', 'detached active login (local only, not revoked)');
           }, { reloadStrategy: 'window' });
 
@@ -718,37 +667,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           if (!pendingAdd) throw new Error('No account sign-in is in progress.');
           const { accountId: explicitId } = await readJsonBody(req);
 
-          let targetId: string;
-          if (explicitId) {
-            // Trustworthy: the caller is asserting a specific id, same as any
-            // other explicit connect() call — no guessing involved.
-            targetId = explicitId;
-          } else {
-            // Best-effort guess via agy's own log scan. Known to be unreliable
-            // for genuinely new accounts in this environment — see the removed
-            // watchForNewSignIn() comment above for why — so pass an explicit
-            // accountId in the request body instead whenever the real email is
-            // known (e.g. from the Account panel).
-            const before = snapshotProfiles();
-            let captured;
-            try {
-              captured = await runCliJson(['connect', '--json']);
-            } catch {
-              throw new Error('No signed-in account found yet. Finish signing in with Google first, or click Cancel to restore your previous account.');
-            }
-            if (pendingAdd.knownAccountIds.includes(captured.account_id)) {
-              if (restoreProfile(captured.account_id, before)) {
-                log('ADD_ACCOUNT', 'guessed capture landed on a known account; reverted its profile', captured.account_id);
-              }
-              throw new Error(
-                `Could not determine who signed in (guessed ${captured.account_id}, which already exists — nothing was changed). ` +
-                `Pass the real email as accountId, or click Cancel to restore your previous account.`
-              );
-            }
-            targetId = captured.account_id;
+          // No guessing fallback — see
+          // docs/decisions/2026-08-26-vendor-agent-hub-accounts.md. The old
+          // fallback (agy log-scan) was already known-broken in this
+          // environment (docs/decisions/2026-08-23-account-corruption-guessing-broken.md);
+          // vendoring is not the place to reproduce it.
+          if (!explicitId) {
+            throw new Error(
+              'An explicit accountId is required. Use POST /api/add-account/report-identity ' +
+              'from the UI instead, or pass the real email as accountId here.'
+            );
           }
 
-          const captured = await runCliJson(['connect', targetId, '--json']);
+          const captured = withFileLock(accountPaths.switchLockPath, () => accountService.capture(explicitId, explicitId, true));
           log('ADD_ACCOUNT', 'captured account', captured.account_id);
 
           // Signing back in as the same account is not a failure — the state is
@@ -798,7 +729,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             return;
           }
 
-          const captured = await runCliJson(['connect', accountId, '--json']);
+          const captured = withFileLock(accountPaths.switchLockPath, () => accountService.capture(accountId, accountId, true));
           const isNewAccount = !pendingAdd.knownAccountIds.includes(captured.account_id);
           log('ADD_ACCOUNT', 'identity reported from Account panel, captured', captured.account_id, `isNew=${isNewAccount}`);
 
@@ -823,7 +754,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           // the saved credential profile, and the hub rebuilds its cached session
           // from that on the restart below. That is the same path every ordinary
           // account switch takes, so it is exercised constantly.
-          await runCli(['switch', backupAccountId, '--json']);
+          withFileLock(accountPaths.switchLockPath, () => accountService.switchAccount(backupAccountId));
           log('ADD_ACCOUNT', 'restored backup account', backupAccountId);
           setPendingAdd(null);
           await restartAntigravityHub();
@@ -850,7 +781,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           pending: !!pendingAdd,
           ...(pendingAdd ?? {}),
           justAdded,
-          signedOut: !(await isKeychainActiveAvailable()),
+          signedOut: !keychain.activeAvailable(),
         }));
         return;
       }
@@ -871,9 +802,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
 
       if (url.pathname === '/api/quota-refresh' && req.method === 'POST') {
-        const stdout = await runCli(['quota', '--all', '--json']);
+        // Cache-only, same as before vendoring — a real refresh needs an
+        // isolated hub per account, out of scope here. See
+        // docs/decisions/2026-08-26-vendor-agent-hub-accounts.md.
+        const output = accountService.quotaBatchSnapshot();
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(stdout);
+        res.end(JSON.stringify(output));
         return;
       }
 
