@@ -127,19 +127,41 @@ document.addEventListener('click', (e) => {
   }
 }, true);
 
-setInterval(ensureProfileBadge, 1500);
 window.addEventListener('resize', () => {
   const trigger = SemanticLocator.findProfileTrigger();
   if (trigger && badgeInstance) positionBadge(badgeInstance, trigger);
 });
 
+// MutationObserver instead of blind polling: both functions just need to
+// re-run whenever the native DOM they anchor to might have changed (the
+// badge's profile trigger, the Settings card's anchor section) — a DOM
+// mutation is exactly the signal for that, and reacts within a frame instead
+// of waiting up to a fixed interval. rAF-coalesces a burst of mutation
+// records (e.g. streaming chat text updating every few ms) into one check
+// per frame rather than running once per record.
+let mutationCheckScheduled = false;
+function scheduleMutationCheck(): void {
+  if (mutationCheckScheduled) return;
+  mutationCheckScheduled = true;
+  requestAnimationFrame(() => {
+    mutationCheckScheduled = false;
+    ensureProfileBadge();
+    injectSettingsEnhancements();
+  });
+}
+new MutationObserver(scheduleMutationCheck).observe(document.body, { childList: true, subtree: true });
+
+// Fallback poll — safety net for a change the observer's childList/subtree
+// config doesn't catch (e.g. an attribute/style-only visibility flip with no
+// node added or removed), same reasoning as cdpInjector.ts's own fallback
+// poll after its move to event-driven CDP detection. Relaxed interval since
+// this is now backup, not the primary detection path.
+setInterval(scheduleMutationCheck, 5000);
+
 setTimeout(() => {
   injectSettingsEnhancements();
   ensureProfileBadge();
 }, 600);
-// Re-runs on interval so the card can self-correct once its anchor section
-// ("Claude and GPT models") finishes rendering, not just once at 600ms.
-setInterval(injectSettingsEnhancements, 1500);
 
 // Fetch immediately on boot — otherwise a fresh injection (e.g. right after
 // the post-switch VS Code window reload) sits on stale/default data for up

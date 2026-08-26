@@ -54,13 +54,49 @@ let restartInProgress = false;
 // reapOrphanedHubs() for why the two paths need different windows.
 const ownedHubPids = new Map<number, { spawnedAt: number; port: number; graceMs: number }>();
 
-async function findHubPids(): Promise<number[]> {
+// Each VS Code window runs its own copy of this daemon (folded into that
+// window's own extension host) and its own `agy --hub` process, but CDP port
+// 9222 and `pgrep -f "agy --hub"` both see every window's hub, not just this
+// one's — confirmed on a real machine with two windows open, one CDP port.
+// Set once from activate() via setOwnWorkspacePaths() (vscode.workspace.
+// workspaceFolders, the same list Antigravity's own extension turns into
+// --add-dir when it first spawns the hub — see readHubSpec()'s comment).
+// Empty means "couldn't determine scoping" (e.g. a workspace with no folders)
+// and falls back to the old unscoped behavior rather than silently acting on
+// nothing — correct for a single-window install, ambiguous with more than
+// one, same tradeoff findWorkbenchPageTarget() already accepts below.
+let ownWorkspacePaths: string[] = [];
+
+export function setOwnWorkspacePaths(paths: string[]): void {
+  ownWorkspacePaths = paths;
+}
+
+async function findAllHubPids(): Promise<number[]> {
   try {
     const { stdout } = await execAsync('pgrep -f "agy --hub"');
     return stdout.trim().split('\n').filter(Boolean).map(Number);
   } catch {
     return []; // pgrep exits 1 (no output) when nothing matches — not an error here
   }
+}
+
+async function findHubPids(): Promise<number[]> {
+  const all = await findAllHubPids();
+  if (ownWorkspacePaths.length === 0 || all.length <= 1) return all;
+
+  const specs = await Promise.all(all.map(async pid => ({ pid, spec: await readHubSpec(pid) })));
+  return specs
+    .filter(({ spec }) => spec && spec.args.some(a => a.startsWith('--add-dir=') && ownWorkspacePaths.includes(a.slice('--add-dir='.length))))
+    .map(({ pid }) => pid);
+}
+
+// Every currently-live port belonging to hubs findHubPids() considers ours —
+// what cdpInjector.ts scopes its own CDP target matching against, since CDP
+// itself has no per-window concept (see the comment on ownWorkspacePaths).
+export async function getOwnHubPorts(): Promise<number[]> {
+  const pids = await findHubPids();
+  const specs = await Promise.all(pids.map(readHubSpec));
+  return specs.filter((s): s is HubSpec => s !== null).map(s => s.port);
 }
 
 interface HubSpec {
@@ -456,11 +492,14 @@ async function reapOrphanedHubs(): Promise<void> {
   }
 }
 
-export function startHubReaperLoop(intervalMs = 30000): void {
-  setInterval(() => {
+// Returns a stop function so activate() can dispose the timer on deactivate —
+// see docs/decisions/2026-08-26-extension-host-daemon.md.
+export function startHubReaperLoop(intervalMs = 30000): () => void {
+  const timer = setInterval(() => {
     if (restartInProgress) return; // mid-restart the picture is intentionally inconsistent
     reapOrphanedHubs().catch(e => log('HUB_REAP', 'reaper tick failed', e?.message ?? String(e)));
   }, intervalMs);
+  return () => clearInterval(timer);
 }
 
 export interface HubRestartResult {

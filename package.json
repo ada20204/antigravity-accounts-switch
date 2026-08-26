@@ -1,20 +1,42 @@
 {
   "name": "antigravity-accounts-enhancer",
+  "displayName": "Antigravity Accounts Enhancer",
   "version": "1.0.0",
   "description": "Live Hot-Reload Multi-Account & UI Enhancer for Google Antigravity",
-  "main": "dist/extension.js",
-  "type": "module",
+  "publisher": "local",
+  "main": "out/daemon/extension.js",
+  "engines": {
+    "vscode": "^1.90.0",
+    "node": ">=18.0.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "contributes": {
+    "configuration": {
+      "title": "Antigravity Accounts Enhancer",
+      "properties": {
+        "antigravityAccountsEnhancer.verboseLogging": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show high-volume request/frontend log lines in the Antigravity Accounts Output Channel (they always go to the log file regardless)."
+        }
+      }
+    }
+  },
   "scripts": {
     "dev": "vite",
     "build:runtime": "vite build",
+    "compile": "tsc -p tsconfig.extension.json",
+    "vscode:prepublish": "npm run compile && npm run build:runtime",
+    "package": "vsce package --no-dependencies --no-rewrite-relative-links --allow-missing-repository",
     "patch": "node scripts/patch.mjs",
     "unpatch": "node scripts/unpatch.mjs",
-    "daemon": "tsx src/daemon/daemon.ts",
     "test": "node --test test/*.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
-    "tsx": "^4.23.12",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.7.1",
     "typescript": "^5.3.3",
     "vite": "^5.1.0"
   }

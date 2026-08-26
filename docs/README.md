@@ -15,23 +15,23 @@
 
 ```
 src/
-  daemon/       本地桥接服务(Node 进程,端口 63820)——见下面"开工前"第 1 条
-    daemon.ts       HTTP 路由入口
-    hubRestart.ts    agy --hub 进程生命周期管理
-    cdpInjector.ts   往 VS Code webview 注入 runtime bundle 的 CDP 循环
+  daemon/       daemon 逻辑,现在跑在 Antigravity extension host 进程里——见下面"开工前"
+    extension.ts     activate()/deactivate() 入口 + HTTP 路由(原 daemon.ts 的内容整体搬进来)
+    hubRestart.ts    agy --hub 进程生命周期管理(现在按 workspace folder 过滤,只管本窗口自己的 hub)
+    cdpInjector.ts   往 VS Code webview 注入 runtime bundle 的 CDP 循环(同样按本窗口的 hub 端口过滤)
     cliRunner.ts     agent-hub-accounts CLI 的注入安全封装
     httpUtils.ts     共享的请求体读取/响应/CORS 白名单
-    logger.ts
+    logger.ts        文件日志 + VS Code Output Channel(按 tag 分默认可见/仅 verbose)
   runtime/      注入进 Antigravity webview 的前端代码(浏览器环境,非 Node)
     adapters/    读取/改写 Antigravity 原生 DOM 的适配层(语义定位、邮箱/Plan 抓取)
     services/    AccountStore——状态与 daemon 通信
     ui/          实际渲染的组件(账号弹窗、Settings 卡片、渲染防抖工具等)
-    main.ts      前端入口,由 scripts/patch.mjs 注入的 loader 加载
-scripts/       bridge.js 的 patch/unpatch,以及 Keychain 诊断脚本
+    main.ts      前端入口,由 daemon 自己在 /runtime.js 提供
+scripts/       bridge.js 的 patch/unpatch(历史方案,已被 CDP 注入取代)、Keychain 诊断脚本
 docs/          见上表
 ```
 
-两侧永远不共享 import——`daemon/` 是 Node 进程,`runtime/` 是浏览器里的注入代码,中间只通过 HTTP(daemon 监听 63820)通信,没有第三条路径。见 [`FLOWS.md`](./FLOWS.md) 了解两者具体怎么协作。
+两侧永远不共享 import——`daemon/` 现在跑在 extension host(仍是 Node 进程),`runtime/` 是浏览器里的注入代码,中间只通过 HTTP(daemon 自己挑的端口,63820-63829)通信,没有第三条路径。见 [`FLOWS.md`](./FLOWS.md) 了解两者具体怎么协作。
 
 ## 历史文档(勿作依据)
 
@@ -41,10 +41,28 @@ docs/          见上表
 - [`ANTIGRAVITY_ARCHITECTURE_AND_MULTI_ACCOUNT_DESIGN.md`](./ANTIGRAVITY_ARCHITECTURE_AND_MULTI_ACCOUNT_DESIGN.md) —— 架构设想,其中切号流水线第 3 步(`RESTART_LS`)从未实现
 - [`ANTIGRAVITY_MULTI_ACCOUNT_DELIVERY_AND_OPERATION_GUIDE.md`](./ANTIGRAVITY_MULTI_ACCOUNT_DELIVERY_AND_OPERATION_GUIDE.md) —— 联调指南,添加账号一节已整体作废
 
-## 开工前必须知道的三件事
+## 开工前必须知道的几件事
 
-仓库里查不到、但每次动手都会撞上的前提:
+**日常使用**:`npm run package`(`vsce package`)产出 `.vsix`,在 Antigravity 里
+"Install from VSIX" 装一次。daemon 现在跑在 extension host 进程里,装/更新/重载
+扩展本身就是重启 daemon——不再需要 Terminal、LaunchAgent 或另开 Vite。见
+[`decisions/2026-08-26-extension-host-daemon.md`](./decisions/2026-08-26-extension-host-daemon.md)。
 
-1. **daemon 必须由你自己在 Terminal.app 启动,不能经 SSH:`npm run daemon`(即 `tsx src/daemon/daemon.ts`)。** macOS Keychain 的 `security -w` 读取需要 GUI 会话,SSH 下静默失败(exit 36),表现为所有账号操作"没反应"。同理,SSH 里跑任何 `--verify` 类命令的失败都不可信。
-2. **VS Code 必须开着 CDP 端口 9222。** 注入完全依赖它——页面 CSP 封死了常规 `<script src>` 注入。
-3. **日志在 `$TMPDIR/antigravity-accounts-enhancer.log`**(macOS 上在 `/var/folders/...`,不是 `/tmp`)。排查一律从 tail 这个文件开始,主要 tag:`[SWITCH]` `[TIMING]` `[HUB_RESTART]` `[HUB_REAP]` `[ADD_ACCOUNT]` `[FRONTEND]`。
+1. **VS Code 必须开着 CDP 端口 9222。** 注入完全依赖它——页面 CSP 封死了常规
+   `<script src>` 注入。这条不管 daemon 跑在哪里都躲不掉;已确认这个端口是整个
+   VS Code 实例共享的(开几个窗口都是同一个 9222),不是每窗口各一个。
+2. **每个 VS Code 窗口是完全独立的一份 daemon**(各自的 extension host 进程,
+   各自在 63820-63829 里挑一个空闲端口,只管自己窗口对应的 `agy --hub`——按
+   `--add-dir` 匹配 workspace folder,不会碰到别的窗口的 hub)。开两个窗口互不
+   干扰,但也意味着"重启 daemon"是按窗口来的,不是全局一次性的。
+3. **改 `src/daemon/` 的代码后需要重新编译再重载窗口**:`npm run compile`(tsc
+   编译到 `out/`)+ Antigravity 里 "Reload Window"。改 `src/runtime/` 的代码走
+   `npm run dev`(Vite),daemon 自己 serve 的是 `npm run build:runtime` 的产物,
+   改完前端代码同样要重新构建(或跑 dev server 临时调试,见下)。
+4. **日志有两处**:文件在 `$TMPDIR/antigravity-accounts-enhancer.log`(macOS 上
+   在 `/var/folders/...`,不是 `/tmp`,每个窗口的 daemon 都写同一份),排查从
+   tail 这个文件开始,主要 tag:`[SWITCH]` `[TIMING]` `[HUB_RESTART]` `[HUB_REAP]`
+   `[ADD_ACCOUNT]` `[FRONTEND]`。VS Code 里 `View > Output`,选 "Antigravity
+   Accounts" 频道,能看到同样内容的一个精简版(`REQ`/`FRONTEND` 这类高频 tag 默认
+   不显示,打开设置 `antigravityAccountsEnhancer.verboseLogging` 才会显示——文件
+   里永远都有,只是 Output 面板默认过滤掉高噪音的)。

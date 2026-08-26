@@ -2,6 +2,9 @@
 
 为什么这么做、试过但失败的方案、以及失败的证据——按主题查,不用整份翻。新的在前;标 `(已被取代)`/`(历史)` 的仅供追溯,结论以后出现的同主题条目为准。
 
+- [注入检测从轮询改成事件驱动](./2026-08-26-event-driven-cdp-detection.md) — 排查了全项目 5 处轮询,只改了真正影响用户感知延迟的两处:CDP target 发现(2s 轮询→`Target.setDiscoverTargets` 事件,现场验证过同 URL 原地 reload 2ms 内就有事件)、前端等 DOM 出现(1.5s 轮询→`MutationObserver`);hub 健康检查、进程退出等待、账号数据后台刷新这三处轮询排查后确认不值得改。
+- [daemon 折进 extension host,取代 LaunchAgent](./2026-08-26-extension-host-daemon.md) — 参考用户自己的 `antigravity-sync-mcp` 项目:`activate()`/`deactivate()` 本身就是完整的进程生命周期管理,不需要独立 daemon 进程;顺带发现并修了两个新问题——CDP 9222 端口全 VS Code 实例共享(不是每窗口一个)、`findHubPids()` 原来没有按窗口过滤——以及一个新出现的跨进程竞态(`addAccountBeginInFlight` 改成文件锁)。
+- [(已被取代)私用打包:装成 LaunchAgent,不做 .vsix,不上应用商店](./2026-08-25-private-packaging-launchagent.md) — 被上面一条取代:需求从"私下装得方便"变成"最终结构必须是插件",daemon 本身折进了 extension host,不再需要 LaunchAgent 这层。
 - [多账号消失:agent-hub-accounts 把 route 废弃、换了 schema](./2026-08-25-route-schema-break.md) — 数据没丢,是上游 CLI 把 `route` 降级成废弃别名、schema 换了(`accounts`→`results`、`active`→`is_active`),`daemon.ts`/`accountStore.ts` 改用 `list`/`current --verify`。
 
 - [Review 复查:借鉴 agent-hub-accounts 那批改动的 14 条发现全部修复](./2026-08-25-review-14-findings-fixed.md) — 最严重的一条:reaper 宽限期没算上整窗口 reload 的真实耗时,可能杀掉添加账号流程正在用的 hub;`knownPlans` 文件名加版本号避免新旧 daemon 混跑互相破坏数据;symlink 检查改成原子 `O_NOFOLLOW`。
