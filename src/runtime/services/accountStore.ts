@@ -37,7 +37,12 @@ export interface SubscriptionAccount {
 
 export class AccountStore {
   private static STORAGE_KEY = 'ag_enhancer_accounts';
-  private static DAEMON_URL = 'http://127.0.0.1:63820';
+
+  // Per-window port, set by cdpInjector.ts before this bundle runs — see
+  // docs/decisions/2026-08-26-daemon-port-was-hardcoded.md.
+  private static get DAEMON_URL(): string {
+    return `http://127.0.0.1:${(window as any).__AG_DAEMON_PORT__ ?? 63820}`;
+  }
 
   // Fire-and-forget: ships logs to the daemon's log file (webview devtools
   // console isn't tailable after the fact).

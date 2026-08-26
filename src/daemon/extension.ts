@@ -450,8 +450,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       // someone else's.
       if (url.pathname === '/api/report-plan' && req.method === 'POST') {
         const { accountId, label } = await readJsonBody(req);
-        if (!accountId || !label) {
-          respondError(res, 400, 'Missing accountId or label');
+        // Both fields end up rendered as raw HTML by the injected popup/card
+        // and accountId is used as an object key — reject non-strings outright
+        // (blocks __proto__-style prototype pollution) and cap length rather
+        // than trusting the frontend's own shape. See
+        // docs/decisions/2026-08-26-unescaped-account-fields-in-innerhtml.md.
+        if (typeof accountId !== 'string' || typeof label !== 'string'
+            || !accountId || !label || label.length > 64
+            || ['__proto__', 'prototype', 'constructor'].includes(accountId)) {
+          respondError(res, 400, 'Missing or invalid accountId/label');
           return;
         }
         if (knownPlans[accountId] !== label) {

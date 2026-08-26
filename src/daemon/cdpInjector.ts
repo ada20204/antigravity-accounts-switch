@@ -54,7 +54,7 @@ async function getBrowserWsUrl(): Promise<string> {
 
 // Not cached by target id — an in-place reload keeps the same id but wipes
 // the injected script, so every check re-verifies idempotently instead.
-async function injectInto(targetId: string, loaderSrc: string, styleSrc: string): Promise<'injected' | 'present'> {
+async function injectInto(targetId: string, loaderSrc: string, styleSrc: string, daemonPort: number): Promise<'injected' | 'present'> {
   // CDP's per-target debugger path is /devtools/page/<id> regardless of the
   // target's own `type` (confirmed live: an "iframe"-typed target's own
   // webSocketDebuggerUrl from /json used this same path) — constructible
@@ -77,6 +77,7 @@ async function injectInto(targetId: string, loaderSrc: string, styleSrc: string)
   const expression = `
     (function() {
       if (window.AntigravityEnhancerRuntime) return 'present';
+      window.__AG_DAEMON_PORT__ = ${daemonPort};
       var link = document.createElement('link');
       link.rel = 'stylesheet';
       link.href = '${styleSrc}';
@@ -141,7 +142,7 @@ export function startCdpInjectorLoop(daemonPort: number): () => void {
     try {
       const ownPorts = await cachedOwnHubPorts();
       if (!isOwnUrl(url, ownPorts)) return;
-      const outcome = await injectInto(targetId, loaderSrc, styleSrc);
+      const outcome = await injectInto(targetId, loaderSrc, styleSrc, daemonPort);
       if (outcome === 'injected') {
         // Timestamped (unlike a plain console.log) so it can be diffed
         // against [HUB_RESTART]/[SWITCH] timestamps — see

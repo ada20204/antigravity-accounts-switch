@@ -24,3 +24,13 @@ export function leafEmailText(el: HTMLElement): string | null {
   const text = el.textContent?.trim() ?? '';
   return EMAIL_PATTERN.test(text) ? text : null;
 }
+
+// accountPopup.ts/settingsEnhancer.ts build markup via innerHTML template
+// strings rather than DOM APIs, so every daemon-sourced field interpolated
+// into one (account name, plan label, issue text, id used in a data-*
+// attribute) must go through this first — see
+// docs/decisions/2026-08-26-unescaped-account-fields-in-innerhtml.md.
+const HTML_ESCAPES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+export function escapeHtml(value: unknown): string {
+  return String(value ?? '').replace(/[&<>"']/g, (ch) => HTML_ESCAPES[ch]);
+}

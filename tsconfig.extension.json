@@ -4,7 +4,8 @@
     "noEmit": false,
     "outDir": "out",
     "rootDir": "src",
-    "module": "CommonJS"
+    "module": "Node16",
+    "moduleResolution": "Node16"
   },
   "include": ["src/daemon/**/*.ts"]
 }

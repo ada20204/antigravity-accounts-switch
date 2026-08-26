@@ -2,10 +2,11 @@ import { AccountStore } from '../services/accountStore';
 import { showConfirm, showAlert } from './confirmDialog';
 import { showProgress } from './progressOverlay';
 import { bindUntilRemoved, unbind, shouldSkipRender, renderOrDefer } from './renderGuard';
+import { escapeHtml } from '../adapters/domUtils';
 
 // Deterministic initial, not a stock photo — see docs/decisions/profile-trigger-sync-not-coordinate.md, "头像".
 function initial(name: string): string {
-  return (name.trim()[0] || '?').toUpperCase();
+  return escapeHtml((name.trim()[0] || '?').toUpperCase());
 }
 
 export function createAccountPopup(): HTMLElement {
@@ -50,7 +51,7 @@ function renderPopupContent(container: HTMLElement) {
   container.innerHTML = `
     <div class="ag-enhancer-header">
       <div class="ag-enhancer-avatar" style="background:${activeAccount?.color || '#6b7280'};">${initial(activeAccount?.name || '?')}</div>
-      <span class="ag-enhancer-user-name">${activeAccount?.name || 'User'}</span>
+      <span class="ag-enhancer-user-name">${escapeHtml(activeAccount?.name || 'User')}</span>
     </div>
 
     <div class="ag-enhancer-summary-card">
@@ -75,12 +76,12 @@ function renderPopupContent(container: HTMLElement) {
         </div>
       ` : ''}
       ${accounts.map(acc => `
-        <div class="ag-enhancer-sub-item ${acc.isActive ? 'active' : ''}" data-account-id="${acc.id}">
+        <div class="ag-enhancer-sub-item ${acc.isActive ? 'active' : ''}" data-account-id="${escapeHtml(acc.id)}">
           <div class="ag-enhancer-sub-left">
             <div class="ag-dot ag-dot-avatar" style="background-color: ${acc.color};">${initial(acc.name)}</div>
             <div class="ag-enhancer-sub-info">
-              <div class="ag-enhancer-sub-name">${acc.name} · ${acc.plan}</div>
-              <div class="ag-enhancer-sub-dots">${acc.issue ? `<span style="color:#ef4444;font-size:10px;">${acc.issue}</span>` : acc.tokenMask}</div>
+              <div class="ag-enhancer-sub-name">${escapeHtml(acc.name)} · ${escapeHtml(acc.plan)}</div>
+              <div class="ag-enhancer-sub-dots">${acc.issue ? `<span style="color:#ef4444;font-size:10px;">${escapeHtml(acc.issue)}</span>` : acc.tokenMask}</div>
             </div>
           </div>
           <div class="ag-enhancer-sub-percent" style="${acc.issue ? 'color:#ef4444;' : ''}">

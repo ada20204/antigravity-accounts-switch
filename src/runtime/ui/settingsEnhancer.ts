@@ -2,6 +2,7 @@ import { AccountStore } from '../services/accountStore';
 import { SemanticLocator } from '../adapters/semanticLocator';
 import { showConfirm, showAlert } from './confirmDialog';
 import { bindUntilRemoved, unbind, shouldSkipRender, renderOrDefer } from './renderGuard';
+import { escapeHtml } from '../adapters/domUtils';
 
 // bindUntilRemoved dedups by element reference — it only replaces a binding
 // made on the SAME element. A Settings tab switch destroys our card and the
@@ -117,17 +118,17 @@ function renderSettingsCard(card: HTMLElement, force = false) {
       ${accounts.map(acc => {
         const ringColor = acc.issue ? '#ef4444' : acc.quotaPercent < 20 ? '#f59e0b' : '#22c55e';
         return `
-        <div class="ag-sub-box ${acc.isActive ? 'active' : ''}" data-account-id="${acc.id}">
+        <div class="ag-sub-box ${acc.isActive ? 'active' : ''}" data-account-id="${escapeHtml(acc.id)}">
           <div class="ag-sub-box-header">
             <div style="display:flex;align-items:center;gap:8px;min-width:0;">
               <span class="ag-dot" style="background:${acc.color};"></span>
-              <span class="ag-sub-box-name">${acc.name}</span>
+              <span class="ag-sub-box-name">${escapeHtml(acc.name)}</span>
             </div>
             ${acc.isActive ? '<span style="font-size:10px;color:#4ade80;font-weight:600;white-space:nowrap;">ACTIVE</span>' : ''}
           </div>
           <div class="ag-sub-box-main">
             <span class="ag-sub-box-val" style="${acc.issue ? 'color:#ef4444;' : ''}">
-              ${acc.issue ? acc.issue : `${acc.quotaPercent}% Remaining`}
+              ${acc.issue ? escapeHtml(acc.issue) : `${acc.quotaPercent}% Remaining`}
             </span>
             ${renderQuotaRing(acc.issue ? 0 : acc.quotaPercent, ringColor)}
           </div>
@@ -135,7 +136,7 @@ function renderSettingsCard(card: HTMLElement, force = false) {
             <span>Gemini weekly ${acc.geminiWeekly ?? 100}% · 5-hour ${acc.gemini5h ?? 100}%</span>
             <span style="display:flex;gap:10px;">
               <span style="font-size:11px;color:#60a5fa;cursor:pointer;" class="ag-switch-btn">${acc.isActive ? 'In Use' : 'Switch'}</span>
-              <span style="font-size:11px;color:#9ca3af;cursor:pointer;" class="ag-remove-btn" data-account-id="${acc.id}">Remove</span>
+              <span style="font-size:11px;color:#9ca3af;cursor:pointer;" class="ag-remove-btn" data-account-id="${escapeHtml(acc.id)}">Remove</span>
             </span>
           </div>
         </div>

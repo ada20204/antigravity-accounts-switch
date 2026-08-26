@@ -533,6 +533,30 @@ export async function restartAntigravityHub(
       timingMs: { stopHub: 0, hubHealthy: 0, reload: 0, total: 0 },
     };
   }
+  // Must check reload viability BEFORE onStopped runs, not after — see
+  // docs/decisions/2026-08-26-window-reload-precheck.md.
+  if (options?.reloadStrategy === 'window') {
+    let target: CdpTarget | null;
+    try {
+      target = await findWorkbenchPageTarget();
+    } catch (e: any) {
+      log('HUB_RESTART', 'CDP not reachable, refusing to touch the hub before confirming a reload target', e.message);
+      target = null;
+    }
+    if (!target) {
+      log('HUB_RESTART', 'no unique workbench window to reload — refusing to touch the hub or run onStopped');
+      return {
+        restarted: false,
+        strategy: 'none',
+        detail: 'no unique VS Code window found to reload; nothing was changed',
+        hubPidsStopped: [],
+        forcedKillPids: [],
+        reloadFailed: true,
+        timingMs: { stopHub: 0, hubHealthy: 0, reload: 0, total: 0 },
+      };
+    }
+  }
+
   restartInProgress = true;
   const t0 = Date.now();
 
