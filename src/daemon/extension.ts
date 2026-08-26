@@ -31,16 +31,9 @@ const execAsync = promisify(exec);
 const PORT_RANGE_START = 63820;
 const PORT_RANGE_END = 63829;
 
-// Resolved from the module's own location via CommonJS's __dirname, not
-// process.cwd() — mirrors how tsc lays out out/daemon/extension.js relative
-// to dist/ at the repo root (same depth daemon.ts used to resolve from
-// src/daemon/daemon.ts). This extension is compiled to CommonJS specifically
-// (see tsconfig.extension.json) because the VS Code extension host loads
-// extensions via require(), which cannot load an ES module — the rest of
-// this project stays ESM (package.json's "type": "module"), only the
-// compiled output under out/ is CommonJS (out/package.json overrides the
-// module type for that subtree). __dirname is CommonJS's native equivalent
-// of import.meta.url, which isn't usable here for the same reason.
+// __dirname (CommonJS), not import.meta.url — this file compiles to
+// CommonJS (tsconfig.extension.json) since the extension host loads it via
+// require(). See docs/decisions/2026-08-26-extension-host-daemon.md.
 const DIST_DIR = path.join(__dirname, '..', '..', 'dist');
 const STATIC_CONTENT_TYPES: Record<string, string> = {
   '/runtime.js': 'text/javascript',
@@ -118,12 +111,8 @@ function restoreProfile(accountId: string, snapshot: Map<string, Buffer>): boole
 // the single chokepoint every "is this account currently active" decision in
 // this file should go through — a cached-route shortcut here is exactly what
 // destroyed an account once already (see docs/decisions/2026-08-23-never-bare-connect-call.md).
-//
-// `route` was `current`'s predecessor in agent-hub-accounts and is now a
-// deprecated cache-only alias that no longer accepts `--verify` at all (a
-// live upstream change, not something this project did) — `current --verify`
-// is the direct replacement, and its schema renamed the `active` field to
-// `is_active`.
+// Uses `current --verify`, not the deprecated `route` — see
+// docs/decisions/2026-08-25-route-schema-break.md.
 async function resolveActiveAccountId(): Promise<string | null> {
   try {
     const verified = await runCliJson(['current', '--verify', '--json']);
@@ -142,48 +131,9 @@ async function resolveActiveAccountId(): Promise<string | null> {
 const HUB_TOKEN_FILE = path.join(os.homedir(), '.gemini', 'jetski-standalone-oauth-token');
 
 // --- Add-account flow state ---
-//
-// Survives the webview reload that the sign-out step triggers, which is why it
-// lives here rather than in page state — and persisted to disk, because it also
-// has to survive this daemon restarting. That is not hypothetical: a restart
-// mid-flow drops the flag, the banner disappears, and a user who is currently
-// signed out has no button left to finish or cancel with.
-//
-// lastAddedAccountId is persisted the same way for the same reason: it used to
-// be in-memory only ("a one-shot notification, not state worth persisting"),
-// but a daemon restart landing in the gap between report-identity setting it
-// and the frontend's next status poll reading it meant the switch itself went
-// through (durable via the CLI) while the "Added X" confirmation silently
-// never fired — no error, just a flow that completes without ever telling the
-// user it succeeded. Both halves of this flow's state now follow the same
-// persist-to-disk rule instead of that being a per-field judgment call.
-//
-// knownAccountIds is the whole point of distinguishing "a new account signed
-// in" from "the active credential changed". Comparing against backupAccountId
-// alone is not enough: switching to any OTHER already-saved account also
-// changes it, and would be announced as a new account that was in the list all
-// along.
-//
-// These three stores are deliberately still shared across every window's
-// daemon (one os.tmpdir() path, not per-window) rather than scoped by port —
-// see jsonStore.ts's header comment for why: they track one shared underlying
-// reality (the Keychain's single active slot; per-account plan labels), not a
-// per-window one.
-//
-// loadJsonFile/saveJsonFile (atomic temp+rename write, symlink-safe — see
-// jsonStore.ts) are shared by all three persisted stores below (pendingAdd,
-// lastAddedAccountId, knownPlans); each used to hand-roll its own "read JSON
-// from os.tmpdir(), tolerate missing/corrupt file, write-or-rm" pair
-// independently. `validate` carries whatever back-compat/shape-checking each
-// store still needs.
-// Schema tags on every persisted shape below — adapted from agent-hub-
-// accounts' src/accounts/registry.ts, which tags each on-disk record with a
-// `schema` string and migrates or rejects by that tag rather than guessing
-// from whatever fields happen to be present. Only one version of each exists
-// so far, so this doesn't gate anything strictly yet; it exists so the next
-// real format change has an explicit marker to key a migration off instead of
-// another ad hoc "field X might be missing" check layered on top of the last
-// one (which is exactly how knownAccountIds' fallback below came to exist).
+// Persisted to disk (not in-memory) so a daemon restart mid-flow can't drop
+// it; knownAccountIds distinguishes a genuinely new sign-in from switching to
+// an already-saved account. See docs/decisions/add-account-state-persistence.md.
 const PENDING_ADD_SCHEMA = 'antigravity-accounts-enhancer.pending_add.v1';
 interface PendingAdd {
   schema: typeof PENDING_ADD_SCHEMA;
@@ -233,16 +183,8 @@ function loadLastAddedAccountId(): string | null {
 // persist it here so a later /api/accounts response can still show the plan
 // for an account that isn't the active one right now. See
 // docs/decisions/2026-08-23-account-plan-tier.md.
-// Filename carries the version, not just the content: the pre-schema shape
-// was a bare {accountId: label} map, and this wrapped {schema, plans} shape
-// isn't just an added field on top of that (like PendingAdd/LastAddedAccountId
-// above) — it's a structural change, an older daemon's loadKnownPlans (which
-// only ever checked "is this an object") would happily treat the whole
-// {schema, plans} wrapper AS the plans map itself. Writing the new shape to a
-// brand new filename means an older binary reading the OLD filename never
-// sees it, and there's no legacy shape to migrate from under the new name —
-// the one-time cost is that plan data observed before this change doesn't
-// carry forward (it gets passively re-observed next time Settings is open).
+// Filename (not just content) carries the version — a structural shape
+// change, not an additive one; see docs/decisions/2026-08-25-review-14-findings-fixed.md.
 const PLAN_STORE_FILE = path.join(os.tmpdir(), 'antigravity-accounts-enhancer-plans-v1.json');
 const KNOWN_PLANS_SCHEMA = 'antigravity-accounts-enhancer.known_plans.v1';
 
@@ -253,24 +195,15 @@ function loadKnownPlans(): Record<string, string> {
   }) ?? {};
 }
 
-// Cross-process re-entrancy guard for /api/add-account/begin. Used to be a
-// plain in-memory boolean, which was enough when there was exactly one daemon
-// process on the whole machine — the extension-host migration
-// (docs/decisions/2026-08-26-extension-host-daemon.md) means each window now
-// runs its own daemon, so an in-memory flag in window A's process is invisible
-// to window B's. A lock file closes that gap. It's separate from `pendingAdd`
-// on purpose: pendingAdd isn't written until after several awaits (a --verify
-// call, an optional connect, a full hub restart), so two begin() calls racing
-// within that window — now possibly from two different windows — could both
-// see pendingAdd as null and both proceed, the second silently overwriting the
-// first's backupAccountId so a later Cancel restores the wrong account.
+// Cross-process re-entrancy guard for /api/add-account/begin — a file lock,
+// not an in-memory flag, since each window now runs its own daemon (see
+// docs/decisions/2026-08-26-extension-host-daemon.md). Separate from
+// `pendingAdd`: that isn't written until after several awaits, leaving a race
+// window an in-memory-only guard couldn't close across processes.
 const ADD_ACCOUNT_LOCK_FILE = path.join(os.tmpdir(), 'antigravity-accounts-enhancer-add-account.lock');
-// This window's own begin() normally clears well inside this — generous
-// margin above the same worst-case restart timing WINDOW_RELOAD_GRACE_MS in
-// hubRestart.ts already budgets for. Only matters if a daemon process died
-// mid-flow without reaching the `finally` release below; without a staleness
-// check a crash would wedge add-account shut on every window forever, which
-// is worse than the narrow race this lock exists to close.
+// Generous margin above begin()'s worst realistic runtime — reclaims the lock
+// if a daemon died mid-flow without releasing it, so a crash can't wedge
+// add-account shut forever.
 const ADD_ACCOUNT_LOCK_STALE_MS = 60_000;
 
 function acquireBeginLock(): boolean {
@@ -299,27 +232,11 @@ function releaseBeginLock(): void {
   }
 }
 
-// There used to be a daemon-side poller here that auto-captured a new sign-in
-// by calling bare `connect` (no id) every 2s and comparing the guessed id
-// against knownAccountIds, reverting if it landed on one. That guess is
-// `recentAntigravityEmail()` scanning `~/.gemini/antigravity-cli/log/` — the
-// standalone `agy` CLI's log directory. This hub runs with
-// `--app_data_dir=antigravity` and writes to the DIFFERENT `~/.gemini/
-// antigravity/log/`, which never even contains the `email=` pattern the
-// scanner looks for. So the guess isn't merely stale, it is structurally
-// incapable of ever reflecting a sign-in performed through this hub: it stays
-// frozen at whatever the CLI log last held, from some unrelated terminal
-// session, forever. The revert-if-known guard only protected already-saved
-// accounts; a stale guess that happened to name an account that had since
-// been *removed* sailed straight through and got treated as a legitimate new
-// account — which is exactly how a real user's real sign-in got filed under a
-// dead account's name and destroyed it (see docs/decisions/2026-08-23-account-corruption-guessing-broken.md).
-//
-// Replaced with POST /api/add-account/report-identity: the frontend reads the
-// signed-in email directly out of Antigravity's own native Account panel DOM
-// (SemanticLocator.findAccountPanelEmail()) and reports it explicitly. The id
-// is then never guessed — the whole class of misattribution is gone, not just
-// guarded against.
+// A daemon-side poller used to guess new sign-ins from agy's log files here;
+// removed as structurally incapable of ever being correct and responsible for
+// a real account-destroying incident — see
+// docs/decisions/2026-08-23-account-corruption-guessing-broken.md. Replaced by
+// POST /api/add-account/report-identity, which never guesses.
 
 // Manual, fully interactive fallback for adding an account — the primary path
 // is the in-editor flow (/api/add-account/begin et al.), this exists only
@@ -419,16 +336,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   setOwnWorkspacePaths((vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath));
 
-  // Tried wiring setWindowReloadFn() here to workbench.action.restartExtensionHost
-  // as a cheaper alternative to the full CDP window reload for begin()'s
-  // 'window' reloadStrategy — reverted after a live test: the extension host
-  // teardown that command triggers happens fast enough to kill this very
-  // process between the reload call returning and setPendingAdd() running a
-  // few lines below, so the backup-account record never got written and the
-  // user was left signed out with no recorded way back. See
-  // docs/decisions/2026-08-26-extension-host-restart-experiment.md for the
-  // full account — negative result, not just unverified. windowReloadFn stays
-  // at hubRestart.ts's default (the proven CDP full window reload).
+  // Tried wiring setWindowReloadFn() here; reverted as unsafe — see
+  // docs/decisions/2026-08-26-extension-host-restart-experiment.md.
 
   let pendingAdd: PendingAdd | null = loadPendingAdd();
   if (pendingAdd) log('ADD_ACCOUNT', 'resumed pending sign-in from previous daemon run', pendingAdd);
@@ -518,14 +427,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     try {
       if (url.pathname === '/api/accounts' && req.method === 'GET') {
-        // `route --json` is agent-hub-accounts' now-deprecated cache-only alias
-        // (a live upstream change): it still runs, but returns a different
-        // schema (`agent_hub.account_quota_batch.v2`, a `results` array with no
-        // `active`/`accounts` fields at all) — silently parsed here as "zero
-        // accounts" before this fix, since `parsed.accounts` was just
-        // `undefined`. `list --json` (`agent_hub.account_list.v3`) is the
-        // current replacement; runtime/services/accountStore.ts's parsing was
-        // updated to match its shape in the same change.
+        // `list`, not the deprecated `route` — see
+        // docs/decisions/2026-08-25-route-schema-break.md.
         const stdout = await runCli(['list', '--json']);
         const parsed = JSON.parse(stdout);
         for (const acc of parsed.accounts ?? []) {
@@ -603,25 +506,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
       }
 
-      // Opens a real Terminal window instead of running the CLI here. `login`
-      // hard-refuses to run any other way: it rejects --json outright, requires
-      // process.stdin/stdout to be TTYs, and then hands the terminal to the
-      // interactive `agy` sign-in UI via spawnSync(stdio:'inherit'). A daemon
-      // exec() has no TTY, so the old in-process call could only ever fail.
+      // Opens a real Terminal window — `login` hard-refuses to run any other
+      // way (no --json, requires a TTY). See
+      // docs/decisions/historical-add-account-terminal-required.md.
       if (url.pathname === '/api/login' && req.method === 'POST') {
-        // Step 1 is not optional: `login` refuses to start unless the CURRENT
-        // login is already saved byte-for-byte (openAntigravityLogin checks
-        // keychain.profileMatchesActive before detaching it, so a cancelled
-        // sign-in can always be rolled back). The running hub rewrites that
-        // Keychain slot on its own token-refresh cycle, so the saved copy drifts
-        // out of match within minutes of normal use — meaning login fails with
-        // "current agy login is not safely saved" far more often than not.
-        // Re-capturing first is exactly what that error tells you to do.
-        //
-        // No dynamic account id is interpolated into this script — every step
-        // runs `connect`/`login` bare — so unlike the JSON API handlers above it
-        // never needed the execFile-based injection fix; a plain shell string is
-        // fine here.
+        // No dynamic account id is interpolated into this script, so unlike
+        // the JSON API handlers above it doesn't need execFile's injection fix.
         const scriptPath = path.join(os.tmpdir(), `ag-enhancer-login-${Date.now()}.sh`);
         fs.writeFileSync(scriptPath, buildLoginTerminalScript(port), { mode: 0o700 });
 
@@ -672,15 +562,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           const { accountId } = await readJsonBody(req);
           if (!accountId) throw new Error('Missing accountId');
 
-          // Removing the account that's currently signed in would delete the
-          // stored credential out from under the running hub, leaving a live
-          // session whose account no longer exists in the registry. Goes through
-          // the same --verify chokepoint as begin()/connect() — a plain cached
-          // `route` read here is exactly the bug class that already destroyed an
-          // account (see docs/decisions/credential-drift-explained.md): the hub rotates its OAuth token into
-          // the shared Keychain slot on its own schedule, so cached "active" can
-          // report the OLD account while the Keychain already holds a different
-          // one's live credential.
+          // Goes through the same --verify chokepoint as begin()/connect(), not
+          // a cached read — see docs/decisions/credential-drift-explained.md.
           const activeId = await resolveActiveAccountId();
           if (activeId && activeId === accountId) {
             log('REMOVE', 'refused: account is currently active', accountId);
@@ -726,13 +609,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           // have been seen naming an account active while the Keychain held a
           // different credential entirely.
           //
-          // Two calls, not one: `route --verify` used to return both the full
-          // roster and the verified-active flag together, but `route` is now a
-          // deprecated cache-only alias that doesn't accept `--verify` at all
-          // (a live upstream agent-hub-accounts change). `list --json` is the
-          // roster; `current --verify --json` is the verified-active check —
-          // it only ever returns the currently-active account(s), not the
-          // roster, which is why this needs both instead of one.
+          // Two calls, not one: `list` is the roster, `current --verify` only
+          // ever returns the active account(s), not the roster — see
+          // docs/decisions/2026-08-25-route-schema-break.md.
           const roster = await runCliJson(['list', '--json']);
           const knownAccountIds: string[] = (roster.accounts || []).map((a: any) => a.account_id);
           const verifiedCurrent = await runCliJson(['current', '--verify', '--json']);
@@ -799,16 +678,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           log('ADD_ACCOUNT', 'hub restarted into signed-out state:', restart.detail);
 
           if (restart.onStoppedError || restart.reloadFailed) {
-            // The hub is alive again (restartAntigravityHub never leaves it
-            // dead over this), but either the credential-clearing step may not
-            // have run (onStoppedError — e.g. a restart was already in flight
-            // and this one's onStopped never fired) or the VS Code window
-            // reload failed (reloadFailed — the native sign-in page this flow
-            // depends on never gets a chance to render). Either way, reporting
-            // success here would be exactly the kind of false "nothing changed"
-            // this is meant to avoid in the other direction. Do not set
-            // pendingAdd: there is nothing to cancel back from if the user was
-            // never actually signed out, or never shown a way to sign in.
+            // See HubRestartResult's onStoppedError/reloadFailed fields
+            // (hubRestart.ts) for what each means. Not setting pendingAdd here
+            // is deliberate: nothing to cancel back from if sign-out or the
+            // sign-in page itself may not have actually happened.
             const reason = restart.onStoppedError ?? 'the VS Code window failed to reload';
             throw new Error(
               `Hub restarted, but clearing the current login may have failed (${reason}). ` +

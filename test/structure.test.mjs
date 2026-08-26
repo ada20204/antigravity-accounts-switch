@@ -27,15 +27,10 @@ const MAX_FILES_PER_DIR = 12;
 // is grandfathered in. Adding an entry (or bumping one's count) should be
 // rare and deliberate, not a way to silence a new violation.
 const LINE_LIMIT_EXCEPTIONS = new Map([
-  // daemon.ts was folded into extension.ts's activate() during the
-  // extension-host migration (docs/decisions/2026-08-26-extension-host-daemon.md) —
-  // wrapping it in a function body plus the per-window scoping/lock additions
-  // grew it further, not a fresh violation to re-litigate from zero.
-  // Grown four times now (882→993→999→1009→1034) — genuinely overdue for
-  // splitting (route handlers vs. activate()/wiring), not just another bump.
-  // Next non-trivial change to this file should do that split first.
-  ['src/daemon/extension.ts', 1034],
-  ['src/daemon/hubRestart.ts', 679],
+  // See docs/ISSUES.md — extension.ts is overdue for splitting, not just
+  // another ratchet bump.
+  ['src/daemon/extension.ts', 893],
+  ['src/daemon/hubRestart.ts', 627],
 ]);
 
 function relativePath(target) {

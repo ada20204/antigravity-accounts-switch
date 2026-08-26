@@ -67,21 +67,12 @@ export class AccountStore {
         const data = await res.json();
         const colors = ['#688e57', '#3b58cc', '#b5a999', '#a6334f', '#2e8b57', '#f6b26b'];
         const accounts: SubscriptionAccount[] = (data.accounts || []).map((acc: any, idx: number) => {
-          // Schema v3 (`agent_hub.account_list.v3`, replacing the v2 `route`
-          // shape this used to read — route is now a deprecated cache-only
-          // alias with a different, incompatible schema, an upstream
-          // agent-hub-accounts change): quota moved under `acc.quota`, the
-          // fixed {gemini, other} keys became an array of named groups each
-          // with a `buckets` array, and `active` was renamed `is_active`.
+          // Schema v3 — see docs/decisions/2026-08-25-route-schema-break.md.
           const gemWeeklyFraction = findQuotaBucket(acc.quota?.groups, 'gemini-weekly');
           const gem5hFraction = findQuotaBucket(acc.quota?.groups, 'gemini-5h');
           const gemWeekly = gemWeeklyFraction != null ? Math.round(gemWeeklyFraction * 100) : null;
           const gem5h = gem5hFraction != null ? Math.round(gem5hFraction * 100) : null;
-          // Whichever limit is closer to running out is the one that will
-          // actually block you, so the headline number is the lower of the two.
-          // Showing five-hour alone made every account read "100%" (it refills
-          // constantly) while the weekly figures that actually differed between
-          // accounts stayed invisible — useless for picking one to switch to.
+          // min(), not five-hour alone — see docs/decisions/2026-08-23-multi-account-quota-display.md.
           const known = [gem5h, gemWeekly].filter((v): v is number => v != null);
           const issue = acc.quota?.issue ?? null;
           const quota = known.length > 0 ? Math.min(...known) : (issue ? 0 : 100);

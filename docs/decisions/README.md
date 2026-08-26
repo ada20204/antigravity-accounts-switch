@@ -2,7 +2,10 @@
 
 为什么这么做、试过但失败的方案、以及失败的证据——按主题查,不用整份翻。新的在前;标 `(已被取代)`/`(历史)` 的仅供追溯,结论以后出现的同主题条目为准。
 
-- [实验:添加账号的整窗口 reload 能不能换成"重启 extension host"](./2026-08-26-extension-host-restart-experiment.md) — 未定论,标记为实验;`workbench.action.restartExtensionHost` 只重启 extension host 不重建 webview 面板,而 Antigravity 自己重新检测 hub 靠的正是面板重建,这条能不能生效必须现场实测,CDP 摸不到扩展宿主验证不了。
+- [cliRunner.ts 写死的 keychain.js 路径已经过期](./2026-08-26-cliRunner-stale-keychain-path.md) — agent-hub-accounts 自己重构挪了模块位置,我们没同步,导致 `isKeychainActiveAvailable()` 静默假装已登录、`detachActiveKeychainLogin()` 每次必炸,添加账号流程直接在第一步失败;路径修对,耦合本身没解决(见 `docs/ISSUES.md`)。
+- [实验(已失败,已回退):添加账号的整窗口 reload 能不能换成"重启 extension host"](./2026-08-26-extension-host-restart-experiment.md) — 现场测试:`workbench.action.restartExtensionHost` 触发的进程销毁比 `begin()` 写入 backup 账号记录还快,导致用户被留在登出状态且没有可恢复的记录(已手动切回,凭据没丢)。顺带修了一个独立 bug:rescue banner 一旦渲染就再也不更新,账号列表从 0 变到非 0 之后按钮不会补上。
+- [添加账号流程的状态为什么落盘,knownAccountIds 是干什么的](./add-account-state-persistence.md) — pendingAdd/lastAddedAccountId 必须落盘(daemon/extension host 都可能重启),knownAccountIds 用来区分"新账号登录"和"换到另一个已保存账号";顺带收了横幅为什么只在主面板显示、轮询频率为什么自适应这两条(原来散落在 FLOWS.md)。
+- [Hub 回收器为什么分两层(owned/unowned)](./hub-reaper-two-tier-ownership.md) — owned 精确快速回收,unowned 靠连续两次孤立观测+至少两个 hub 同时存在才动手,两层加起来才不会在 daemon 重启后丢失回收能力。
 - [注入检测从轮询改成事件驱动](./2026-08-26-event-driven-cdp-detection.md) — 排查了全项目 5 处轮询,只改了真正影响用户感知延迟的两处:CDP target 发现(2s 轮询→`Target.setDiscoverTargets` 事件,现场验证过同 URL 原地 reload 2ms 内就有事件)、前端等 DOM 出现(1.5s 轮询→`MutationObserver`);hub 健康检查、进程退出等待、账号数据后台刷新这三处轮询排查后确认不值得改。
 - [daemon 折进 extension host,取代 LaunchAgent](./2026-08-26-extension-host-daemon.md) — 参考用户自己的 `antigravity-sync-mcp` 项目:`activate()`/`deactivate()` 本身就是完整的进程生命周期管理,不需要独立 daemon 进程;顺带发现并修了两个新问题——CDP 9222 端口全 VS Code 实例共享(不是每窗口一个)、`findHubPids()` 原来没有按窗口过滤——以及一个新出现的跨进程竞态(`addAccountBeginInFlight` 改成文件锁)。
 - [(已被取代)私用打包:装成 LaunchAgent,不做 .vsix,不上应用商店](./2026-08-25-private-packaging-launchagent.md) — 被上面一条取代:需求从"私下装得方便"变成"最终结构必须是插件",daemon 本身折进了 extension host,不再需要 LaunchAgent 这层。
@@ -32,7 +35,7 @@
 - [多账号下的配额数字与弹窗显示](./2026-08-23-multi-account-quota-display.md) — 修了三个真实显示 bug:配额百分比累加到 500%、5 个账号全显示 100% 没法选、弹窗账号一多被裁掉且无法滚动。
 - [监听器泄漏与无条件重渲染](./2026-08-23-listener-leak-unconditional-rerender.md) — 每开一次弹窗漏一个 window 监听器(实测 5 开 5 漏);1.5s 无条件重渲染会在 mousedown/mouseup 之间吃掉点击。
 - [添加账号(定稿):走原生浏览器登录,不再开 Terminal](./2026-08-23-add-account-native-browser-final.md) — 复用 hub 自己的登录页(`ANTIGRAVITY_OPEN_URL` → 系统浏览器),daemon 只负责摘凭证和捕获新凭证,不碰登录本身。
-- [(历史)添加账号:为什么必须开一个真实 Terminal](./historical-add-account-terminal-required.md) — 已被上面原生浏览器方案取代;记录了 `agy login` 为什么必须交互式 TTY、以及"必须先 connect 再 login"这个坑。
+- [(历史)添加账号:为什么必须开一个真实 Terminal](./historical-add-account-terminal-required.md) — 主流程已被上面原生浏览器方案取代,但 `/api/login` 本身仍是活代码兜底,没有删除;记录了 `agy login` 为什么必须交互式 TTY、以及"必须先 connect 再 login"这个坑。
 - [两个流程复盘](./2026-08-23-two-incidents-retro.md) — 添加账号后忘了重启 hub 导致会话仍在旧账号上;切换时 7 秒零反馈没有加载提示;记录了尚未验证的 `ANTIGRAVITY_OPEN_URL` 免 Terminal 设想。
 - [⚠️ 永远不要裸调 `connect`](./2026-08-23-never-bare-connect-call.md) — 实际损坏过一个账号:不带参数的 `connect` 靠猜邮箱,把凭证写错了档案;改成能确定 ID 就必须显式传,不确定就走可撤销的 snapshot/restore。
 - [又一次账号损坏:自动捕获的猜测机制结构性地不可能猜对](./2026-08-23-account-corruption-guessing-broken.md) — 猜测函数扫的日志目录我们的 hub 从不写入,不是滞后是永远猜不对;改成从原生 Account 面板 DOM 读取真实登录邮箱,彻底去掉猜测。

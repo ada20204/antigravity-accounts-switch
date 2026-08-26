@@ -108,24 +108,13 @@ export class SemanticLocator {
   }
 
   /**
-   * 原生 Account 面板("Email <address> Sign Out")当前显示的邮箱——这是判断
-   * "现在到底登录着谁"唯一可靠的来源。
+   * 原生 Account 面板当前显示的邮箱——判断"现在到底登录着谁"唯一可靠的来源,
+   * 不能用 agent-hub-accounts `connect` 的猜测机制。详见
+   * docs/decisions/2026-08-23-account-corruption-guessing-broken.md。
    *
-   * 为什么不能信任 agent-hub-accounts 的 `connect`(不带参数时靠猜):它扫的是
-   * `~/.gemini/antigravity-cli/log/`,而我们的 hub 是 `--app_data_dir=antigravity`,
-   * 写的是完全不同的 `~/.gemini/antigravity/log/`——两者不通,而且后者压根不产生
-   * `email=` 格式的日志行。所以那个猜测机制在我们的环境里不是"会滞后",是
-   * **结构性地永远猜不对**,冻结在很久以前某次跑 `agy` CLI 时最后一次留下的邮箱。
-   * 已经真实损坏过一个账号(把新登录的凭证存进了一个不相干的旧邮箱名下)。
-   * 详见 docs/decisions/2026-08-23-account-corruption-guessing-broken.md。
-   *
-   * Account 面板平时 `display:none`,但邮箱文本节点始终在 DOM 里,不需要先点开
-   * 头像触发显示。只在 Settings 页(`settings-standalone`)存在。
-   *
-   * 排除我们自己弹窗里的邮箱行:那些出现在
-   * `#ag-enhancer-multi-account-popup`/`#ag-settings-multi-subscription-card`
-   * 内部,上下文是 "Switch"/"In Use",不是 "Sign Out"——用后者精确匹配即可天然
-   * 排除,不用去猜我们自己的 DOM id。
+   * 面板平时 `display:none` 但文本节点始终在 DOM 里,不需要先点开头像;只在
+   * Settings 页(`settings-standalone`)存在。用 "Sign Out" 上下文匹配,天然
+   * 排除我们自己弹窗里 "Switch"/"In Use" 语境的邮箱行。
    */
   public static findAccountPanelEmail(): string | null {
     const leaves = Array.from(document.querySelectorAll<HTMLElement>('div, span, p'));

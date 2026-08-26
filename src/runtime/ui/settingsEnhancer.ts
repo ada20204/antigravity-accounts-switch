@@ -80,16 +80,11 @@ function renderQuotaRing(percent: number, color: string): string {
   `;
 }
 
-// injectSettingsEnhancements() runs every 1.5s to keep the card anchored, and
-// used to re-render unconditionally — rewriting innerHTML four times a second-ish
-// under the user's cursor. A click landing between mousedown and mouseup on a
-// Switch/Remove link was simply lost, because the element it started on had been
-// replaced. Re-render only when the rendered data actually differs (renderGuard's
-// shouldSkipRender) — combined with renderOrDefer at both call sites (above, and
-// the ag-account-changed listener) for the cases a signature change alone can't
-// save: real data landing mid-gesture. `force` is for the one remaining case
-// that's neither — resetting a UI-only artifact (the refresh button's label)
-// that the signature check has no way to know needs resetting.
+// Re-renders only on a signature change (renderGuard's shouldSkipRender),
+// plus renderOrDefer at both call sites for real data landing mid-gesture —
+// see docs/decisions/2026-08-23-listener-leak-unconditional-rerender.md.
+// `force` covers the one remaining case: resetting a UI-only artifact (the
+// refresh button's label) the signature check can't see needs resetting.
 function renderSettingsCard(card: HTMLElement, force = false) {
   const accounts = AccountStore.getAccounts();
   const { averagePercent, count } = AccountStore.getTotalQuota();

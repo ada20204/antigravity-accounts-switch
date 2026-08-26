@@ -2,6 +2,12 @@
 
 **日期**:2026-08-22 · 涉及 `daemon.ts::/api/login`、`accountPopup.ts`
 
+> 这里记录的整体流程(UI 驱动、作为唯一入口)已被
+> [`2026-08-23-add-account-native-browser-final.md`](./2026-08-23-add-account-native-browser-final.md)
+> 取代。但 `/api/login` 本身**没有被删除**,现在仍是活代码——UI 不再主动调用它,
+> 但作为原生浏览器流程失灵时的手动兜底保留着,下面记录的三道 TTY 硬拦截原因
+> 至今仍然成立。
+
 原来的 `/api/login` 是 `execAsync("node cli.js login --json")`,**这个调用永远不可能成功**。查 `agent-hub-accounts` 源码(`src/cli/process-control.ts::openAntigravityLogin`),`login` 有三道硬拦截,每一道都能单独让上面这行失败:
 
 1. `if (json) throw new AccountStateError("login is interactive and does not support --json")` —— 我们恰好传了 `--json`。

@@ -17,15 +17,9 @@ const HUB_HEALTH_TIMEOUT_MS = 25000;
 // same-port-respawn's iframe reload settles in milliseconds — the default
 // grace an owned hub gets before the reaper will consider it orphaned.
 const IFRAME_RELOAD_GRACE_MS = 10_000;
-// The 'window' reloadStrategy path only awaits the CDP Page.reload command
-// being acked, not VS Code actually finishing rebuilding the workbench and
-// re-attaching a webview to the new hub's port — measured elsewhere in this
-// project at 20-30s (docs/decisions/2026-08-22-switch-timing-instrumentation.md).
-// Using the short grace period for this path let the reaper kill a hub an
-// in-progress add-account sign-in still needed, reproducing the exact bug
-// docs/decisions/2026-08-23-add-account-native-signin-missing.md exists to
-// fix. Generous margin above the measured worst case, not a tight bound —
-// reaping a genuinely idle hub 30-some seconds late is harmless.
+// Longer than IFRAME_RELOAD_GRACE_MS: the 'window' path's real settle time is
+// VS Code's rebuild (20-30s), not the CDP ack — see
+// docs/decisions/2026-08-23-add-account-native-signin-missing.md.
 const WINDOW_RELOAD_GRACE_MS = 45_000;
 
 interface CdpTarget {
@@ -54,17 +48,10 @@ let restartInProgress = false;
 // reapOrphanedHubs() for why the two paths need different windows.
 const ownedHubPids = new Map<number, { spawnedAt: number; port: number; graceMs: number }>();
 
-// Each VS Code window runs its own copy of this daemon (folded into that
-// window's own extension host) and its own `agy --hub` process, but CDP port
-// 9222 and `pgrep -f "agy --hub"` both see every window's hub, not just this
-// one's — confirmed on a real machine with two windows open, one CDP port.
-// Set once from activate() via setOwnWorkspacePaths() (vscode.workspace.
-// workspaceFolders, the same list Antigravity's own extension turns into
-// --add-dir when it first spawns the hub — see readHubSpec()'s comment).
-// Empty means "couldn't determine scoping" (e.g. a workspace with no folders)
-// and falls back to the old unscoped behavior rather than silently acting on
-// nothing — correct for a single-window install, ambiguous with more than
-// one, same tradeoff findWorkbenchPageTarget() already accepts below.
+// Scopes findHubPids() to this window's own hub — CDP 9222 and `pgrep`
+// otherwise see every window's. See
+// docs/decisions/2026-08-26-extension-host-daemon.md. Empty falls back to
+// unscoped rather than acting on nothing.
 let ownWorkspacePaths: string[] = [];
 
 export function setOwnWorkspacePaths(paths: string[]): void {
@@ -395,41 +382,9 @@ async function reloadWorkbenchWindow(): Promise<boolean> {
   }
 }
 
-// Reaps hub processes nothing points at any more.
-//
-// Two hubs can legitimately coexist (see docs/decisions/2026-08-22-same-port-respawn-optimization.md):
-// ours on the original port serving the already-open webviews, plus one the
-// extension spawned on a fresh port when the user opened a new panel. Neither is
-// "the old one" — each serves different webviews, so killing by age would break
-// whichever one still had consumers. The only safe rule is "no iframe references
-// this port any more".
-//
-// Two tiers, not one:
-//
-//  - Owned (in ownedHubPids, populated by spawnHubOnSamePort): we know for
-//    certain we spawned these ourselves, so a lone owned hub with no iframes
-//    is unambiguously ours to reap regardless of how many other hubs exist —
-//    no need to infer anything. Grace period is "how long ago did we spawn
-//    it" rather than a sighting count, since the window strike-counting
-//    protects against (a hub the extension hasn't wired an iframe to yet)
-//    doesn't apply here: restartAntigravityHub() wires iframes to a hub it
-//    spawned itself, synchronously, before returning. The grace period is
-//    per-pid (see ownedHubPids' graceMs) because how long that actually takes
-//    depends on which reload path was used — the 'window' strategy's wait is
-//    much longer than an iframe reload's.
-//
-//  - Unowned (everything else findHubPids() returns): hubs the extension
-//    spawned itself, or ones this daemon owned in a run before its last
-//    restart. There is no direct ownership signal for these — the same
-//    "infer from CDP target URLs" the owned tier used to also rely on, with
-//    the same two compensating guards this file has always needed for that:
-//    two consecutive orphan sightings (single snapshot could catch one mid-
-//    startup, before the extension has wired an iframe to it) and only act
-//    when ≥2 hubs exist (a lone hub with no iframes might just be the
-//    extension's idle-but-wanted backend). Keeping this tier is what makes a
-//    daemon restart not lose reaping ability entirely — an earlier version
-//    of this function only ever looked at ownedHubPids, which starts empty
-//    on every boot.
+// Reaps hub processes no iframe references any more — two tiers (owned:
+// precise/fast via ownedHubPids; unowned: strike-counted inference, ≥2 hubs
+// required). See docs/decisions/hub-reaper-two-tier-ownership.md.
 const orphanStrikes = new Map<number, number>();
 const ORPHAN_STRIKES_BEFORE_REAP = 2;
 
@@ -558,14 +513,9 @@ export interface HubRestartResult {
 // without lying about the hub's state.
 export async function restartAntigravityHub(
   onStopped?: () => Promise<void>,
-  // 'window' forces a full VS Code workbench reload instead of the fast
-  // iframe-only refresh after the same-port respawn. Needed by begin(): a
-  // plain iframe reload only refreshes webview content, but the extension
-  // host never learns the hub was replaced, so its own "no hub / show
-  // sign-in" detection never fires and the native login screen doesn't
-  // appear — see docs/decisions/2026-08-23-add-account-native-signin-missing.md. Regular
-  // switch() doesn't need this: credentials are still valid, so refreshed
-  // webview content is all that's required.
+  // 'window' forces a full workbench reload instead of the fast iframe-only
+  // refresh — needed by begin() so the native sign-in page appears; see
+  // docs/decisions/2026-08-23-add-account-native-signin-missing.md.
   options?: { reloadStrategy?: 'iframe' | 'window' }
 ): Promise<HubRestartResult> {
   if (restartInProgress) {

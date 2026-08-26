@@ -55,34 +55,15 @@ export function shouldSkipRender(el: HTMLElement, signature: string, force = fal
 }
 
 // --- 3. Defer rendering while a click is in flight ---
-//
-// The render-signature check above only lowers how *often* a background
-// render lands mid-gesture — it does not close the bug class, since real
-// quota numbers do change across a non-trivial fraction of the 20s polls in
-// normal use (see docs/decisions/2026-08-23-listener-leak-unconditional-rerender.md). If a
-// user's mousedown-to-click on Switch/Remove straddles a poll that legitimately
-// has new data, the signature check no longer saves it: the element is
-// rewritten between mousedown and click, and — this is the actual browser
-// behaviour the original bug depended on — a target element removed from the
-// document before `click` fires simply never receives that click event at
-// all.
-//
-// This defers any render requested while a mouse button is held down until
-// just after the browser would have dispatched `click` on the original,
-// still-attached element. `click` fires synchronously immediately after
-// `mouseup` in the same task for a real user interaction, so scheduling the
-// flush from a `setTimeout(0)` inside the mouseup handler — rather than
-// flushing directly inside it — lets that synchronous dispatch complete on
-// the untouched DOM first.
-//
-// Keyed by the element the render targets, not a raw Set of closures: every
-// call site passes a freshly-created closure, so closure-identity dedup was
-// a no-op — two deferred requests for the same card during one held-down
-// gesture just piled up as two "different" entries that both ran on flush.
-// Keying by target element means a second request for the same element
-// simply replaces the first (safe: each thunk reads live current data, not
-// anything captured at request time), so a long gesture only ever leaves one
-// real pending render per element instead of accumulating duplicates.
+// Defers a background render requested mid-gesture until just after `click`
+// would fire on the original element — see
+// docs/decisions/2026-08-23-listener-leak-unconditional-rerender.md for the
+// bug this closes (the render-signature check above isn't enough on its own).
+// `setTimeout(0)` inside mouseup, not a direct flush, so click's synchronous
+// dispatch completes on the untouched DOM first. Keyed by target element, not
+// closure identity (every call site passes a fresh closure, so a Set here
+// would never dedup) — a second request for the same element safely replaces
+// the first instead of piling up.
 let pointerDown = false;
 const pending = new Map<HTMLElement, () => void>();
 
