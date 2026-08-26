@@ -419,6 +419,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   setOwnWorkspacePaths((vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath));
 
+  // Tried wiring setWindowReloadFn() here to workbench.action.restartExtensionHost
+  // as a cheaper alternative to the full CDP window reload for begin()'s
+  // 'window' reloadStrategy — reverted after a live test: the extension host
+  // teardown that command triggers happens fast enough to kill this very
+  // process between the reload call returning and setPendingAdd() running a
+  // few lines below, so the backup-account record never got written and the
+  // user was left signed out with no recorded way back. See
+  // docs/decisions/2026-08-26-extension-host-restart-experiment.md for the
+  // full account — negative result, not just unverified. windowReloadFn stays
+  // at hubRestart.ts's default (the proven CDP full window reload).
+
   let pendingAdd: PendingAdd | null = loadPendingAdd();
   if (pendingAdd) log('ADD_ACCOUNT', 'resumed pending sign-in from previous daemon run', pendingAdd);
   let lastAddedAccountId: string | null = loadLastAddedAccountId();

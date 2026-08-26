@@ -345,6 +345,20 @@ async function reloadIframesOnPort(port: number): Promise<number> {
   return reloaded;
 }
 
+// Swappable, vscode-API-free by design (same pattern as setOwnWorkspacePaths)
+// so extension.ts could wire an alternative in without hubRestart.ts
+// importing 'vscode' itself. Tried wiring workbench.action.restartExtensionHost
+// here as a cheaper alternative to the CDP full window reload — reverted
+// after a live test killed the extension host (and this daemon's own
+// in-flight request) between the reload call returning and begin() recording
+// the backup account, leaving a user signed out with no way back. See
+// docs/decisions/2026-08-26-extension-host-restart-experiment.md. Nothing
+// currently calls setWindowReloadFn(); this stays at the proven CDP default.
+let windowReloadFn: () => Promise<boolean> = () => reloadWorkbenchWindow();
+export function setWindowReloadFn(fn: () => Promise<boolean>): void {
+  windowReloadFn = fn;
+}
+
 async function reloadWorkbenchWindow(): Promise<boolean> {
   let target: CdpTarget | null;
   try {
@@ -604,7 +618,7 @@ export async function restartAntigravityHub(
           // VS Code's own rebuild, not the CDP command's ack.
           const owned = ownedHubPids.get(spawned.pid);
           if (owned) owned.graceMs = WINDOW_RELOAD_GRACE_MS;
-          const windowReloaded = await reloadWorkbenchWindow();
+          const windowReloaded = await windowReloadFn();
           reloadFailed = !windowReloaded;
           detail = `respawned hub on port ${spec.port} (pid ${spawned.pid}), ${windowReloaded ? 'reloaded VS Code window' : 'FAILED to reload window — extension host may still think the old hub is running'}`;
           log('HUB_RESTART', `same-port respawn OK on ${spec.port}, ${windowReloaded ? 'reloaded VS Code window' : 'window reload FAILED'}`);

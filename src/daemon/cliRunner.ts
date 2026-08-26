@@ -45,7 +45,17 @@ export async function runCliJson(args: string[]): Promise<any> {
 function keychainSnippet(finalStatement: string): string {
   return [
     `const { settings } = require(${JSON.stringify(path.join(AGENT_HUB_DIST, 'cli/options.js'))});`,
-    `const { MacKeychain } = require(${JSON.stringify(path.join(AGENT_HUB_DIST, 'keychain.js'))});`,
+    // agent-hub-accounts moved this module to dist/accounts/keychain.js during
+    // its own refactor (documented in its docs/explanation/integrations.md as
+    // a known drift point) — the old dist/keychain.js path silently no longer
+    // exists, which made isKeychainActiveAvailable() always fall into its
+    // "assume available" catch (masking real sign-out state) and
+    // detachActiveKeychainLogin() throw on every call (breaking the whole
+    // add-account flow at the begin() step). This is still the same kind of
+    // internal-module reach-in agent-hub-accounts' own docs flag as not a
+    // stable contract — worth replacing with a public CLI command if one
+    // covers this later — but for now this is the fix that makes it work.
+    `const { MacKeychain } = require(${JSON.stringify(path.join(AGENT_HUB_DIST, 'accounts/keychain.js'))});`,
     'const keychain = new MacKeychain(settings().credentialsDir);',
     finalStatement,
   ].join('');

@@ -105,17 +105,25 @@ export async function syncAddAccountPrompt(): Promise<number> {
 // It opens that same popup rather than duplicating the account list, so
 // switching keeps going through exactly one code path.
 function syncRescueBanner(signedOut: boolean): void {
-  const existing = document.getElementById(RESCUE_ID);
+  const existing = document.getElementById(RESCUE_ID) as HTMLElement | null;
   if (!signedOut) {
     existing?.remove();
     return;
   }
-  if (existing) return;
 
   const count = AccountStore.getAccounts().length;
-  const banner = document.createElement('div');
+  // Re-renders on a count change instead of a one-time `if (existing) return`
+  // bail — the account list is frequently still empty on the very first tick
+  // after a fresh injection (fetchLiveAccounts() hasn't resolved yet), so the
+  // banner used to permanently freeze in its "no known accounts, no button"
+  // form even after the real list loaded moments later. dataset.count dedups
+  // so an unchanged count (the common case) skips the innerHTML rewrite.
+  if (existing && existing.dataset.count === String(count)) return;
+
+  const banner = existing ?? document.createElement('div');
   banner.id = RESCUE_ID;
   banner.className = 'ag-add-banner';
+  banner.dataset.count = String(count);
   banner.innerHTML = `
     <div class="ag-add-banner-text">
       <div class="ag-add-banner-title">Signed out of Antigravity</div>
@@ -129,7 +137,7 @@ function syncRescueBanner(signedOut: boolean): void {
       ${count > 0 ? '<button class="ag-confirm-btn ag-confirm-ok" id="ag-rescue-switch">Switch account</button>' : ''}
     </div>
   `;
-  document.body.appendChild(banner);
+  if (!existing) document.body.appendChild(banner);
 
   banner.querySelector('#ag-rescue-switch')?.addEventListener('click', (e) => {
     e.stopPropagation();

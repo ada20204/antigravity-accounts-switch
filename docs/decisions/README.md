@@ -2,6 +2,7 @@
 
 为什么这么做、试过但失败的方案、以及失败的证据——按主题查,不用整份翻。新的在前;标 `(已被取代)`/`(历史)` 的仅供追溯,结论以后出现的同主题条目为准。
 
+- [实验:添加账号的整窗口 reload 能不能换成"重启 extension host"](./2026-08-26-extension-host-restart-experiment.md) — 未定论,标记为实验;`workbench.action.restartExtensionHost` 只重启 extension host 不重建 webview 面板,而 Antigravity 自己重新检测 hub 靠的正是面板重建,这条能不能生效必须现场实测,CDP 摸不到扩展宿主验证不了。
 - [注入检测从轮询改成事件驱动](./2026-08-26-event-driven-cdp-detection.md) — 排查了全项目 5 处轮询,只改了真正影响用户感知延迟的两处:CDP target 发现(2s 轮询→`Target.setDiscoverTargets` 事件,现场验证过同 URL 原地 reload 2ms 内就有事件)、前端等 DOM 出现(1.5s 轮询→`MutationObserver`);hub 健康检查、进程退出等待、账号数据后台刷新这三处轮询排查后确认不值得改。
 - [daemon 折进 extension host,取代 LaunchAgent](./2026-08-26-extension-host-daemon.md) — 参考用户自己的 `antigravity-sync-mcp` 项目:`activate()`/`deactivate()` 本身就是完整的进程生命周期管理,不需要独立 daemon 进程;顺带发现并修了两个新问题——CDP 9222 端口全 VS Code 实例共享(不是每窗口一个)、`findHubPids()` 原来没有按窗口过滤——以及一个新出现的跨进程竞态(`addAccountBeginInFlight` 改成文件锁)。
 - [(已被取代)私用打包:装成 LaunchAgent,不做 .vsix,不上应用商店](./2026-08-25-private-packaging-launchagent.md) — 被上面一条取代:需求从"私下装得方便"变成"最终结构必须是插件",daemon 本身折进了 extension host,不再需要 LaunchAgent 这层。
