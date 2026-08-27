@@ -6,7 +6,7 @@
 
 新增 `src/daemon/jsonStore.ts`,`loadJsonFile`/`saveJsonFile` 从 daemon.ts 挪过来,加了两件事:
 - 写入先落 `<file>.<pid>.<ts>.tmp` 再 `renameSync` 到目标名——`rename` 在文件系统层面是原子的,daemon 崩在写一半(SIGKILL、OOM)不会留下一个解析不出来的半截文件。
-- 读写前都 `lstatSync` 检查目标路径不是符号链接——共享的 `os.tmpdir()` 理论上任何本机进程都能在这几个可预测的文件名上放一个符号链接。
+- 读写前检查目标路径不是符号链接——共享的 `os.tmpdir()` 理论上任何本机进程都能在这几个可预测的文件名上放一个符号链接。(最初是 `lstatSync` 检查后再操作,后来按 `docs/decisions/2026-08-26-vendor-agent-hub-accounts.md` 同样的理由升级成 `O_NOFOLLOW`/`O_EXCL` 系统调用级防护,检查和操作之间不再有竞态窗口。)
 
 **没抄的部分**:`agent-hub-accounts` 的 `withFileLock` 是给跨进程场景用的(多个独立 CLI 进程调用可能真的并发)。这个 daemon 是单一常驻 Node 进程,`knownPlans[id]=label; saveKnownPlans()` 这类"改内存 + 存盘"之间没有 `await`,Node 单线程事件循环本身就已经把这类操作串行化了——加一把锁只是在防一个不存在的竞态。`jsonStore.ts` 顶部注释记了这个判断,免得以后有人看着 `agent-hub-accounts` 照抄锁进来。
 

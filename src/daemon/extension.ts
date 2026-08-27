@@ -1,18 +1,10 @@
-// Extension entrypoint — the daemon now lives inside the Antigravity
-// extension host instead of a separately-launched process (LaunchAgent or a
-// manually-started `npm run daemon`). VS Code's own activate/deactivate
-// lifecycle is the entire process lifecycle manager: install/update/reload
-// the extension IS restarting the daemon. See
+// Extension entrypoint — the daemon lives inside the Antigravity extension
+// host, not a separately-launched process. See
 // docs/decisions/2026-08-26-extension-host-daemon.md for why, and for the
-// two things this design has to account for that a single global daemon
-// never did — each window gets its own daemon on its own port, but CDP port
-// 9222 and `pgrep -f "agy --hub"` both see every window, not just this one's
-// (handled in cdpInjector.ts / hubRestart.ts, not here).
+// per-window port/hub-scoping this design has to account for.
 //
-// Only activate()/deactivate() and server wiring (CORS, static files, port
-// allocation, on-disk state persistence) live here — the actual /api/*
-// business logic is routes.ts. See docs/ISSUES.md's (now resolved)
-// "extension.ts 该拆了" entry for why this split happened.
+// Only activate()/deactivate() and server wiring live here — /api/* business
+// logic is routes.ts. See docs/decisions/2026-08-27-split-extension-ts-routes.md.
 
 import * as vscode from 'vscode';
 import http from 'http';

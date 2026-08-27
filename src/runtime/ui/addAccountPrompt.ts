@@ -1,17 +1,6 @@
-// The banner shown while a browser sign-in is in progress.
-//
-// It cannot be a normal modal opened by the click that started the flow:
-// beginAddAccount() signs out and restarts the hub, which reloads this whole
-// webview and destroys anything the page was holding. So the daemon owns the
-// "a sign-in is underway" flag, and every freshly injected runtime asks for it
-// on boot and rebuilds this banner if needed. That also means the banner
-// reappears correctly if the user reloads the window mid-sign-in.
-//
-// There is deliberately no "Done" button. Pressing one would only have told us
-// something the user already told us by signing in — see reportIdentityTick()
-// below for how completion is actually detected. Cancel stays, because "I
-// changed my mind, give me my old account back" is a real intent we cannot
-// infer.
+// The banner shown while a browser sign-in is in progress — rebuilt from
+// daemon state on every boot, no "Done" button. See
+// docs/decisions/add-account-state-persistence.md.
 
 import { AccountStore } from '../services/accountStore';
 import { SemanticLocator } from '../adapters/semanticLocator';

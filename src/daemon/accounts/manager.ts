@@ -1,13 +1,7 @@
-// Vendored from agent-hub-accounts (MIT), verbatim except import paths and
-// dropping isolated-hub-only quotaBatchSnapshot's live-refresh branch (not
-// applicable — see quota.ts's header) — see THIRD_PARTY_NOTICES.md and
-// docs/decisions/2026-08-26-vendor-agent-hub-accounts.md.
-//
-// Security-review note (see that doc): callers should go through this class's
-// switchAccount()/capture(), not keychain.ts's raw activate()/capture()
-// directly — the registry-generation + profileMatchesActive() checks here are
-// the second guard against the account-misattribution bug class documented in
-// docs/decisions/2026-08-23-never-bare-connect-call.md.
+// Vendored from agent-hub-accounts (MIT) — see THIRD_PARTY_NOTICES.md and
+// docs/decisions/2026-08-26-vendor-agent-hub-accounts.md. Callers should go
+// through this class's switchAccount()/capture(), not keychain.ts's raw
+// methods directly — see that doc's security-review notes.
 
 import { AccountStateError } from './support/files';
 import type { KeychainPort } from './keychain';

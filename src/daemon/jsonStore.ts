@@ -1,34 +1,10 @@
 // Small-state JSON persistence for extension.ts (pendingAdd, lastAddedAccountId,
-// knownPlans) — adapted from agent-hub-accounts' src/support/files.ts
-// (readJson/writeJson), with one deliberate simplification: no cross-process
-// file lock. That project's callers are separate CLI process invocations that
-// can genuinely race each other; within one of this daemon's own process,
-// every mutation here is "update the in-memory value, then call
-// saveJsonFile()" with no `await` in between — the single-threaded event loop
-// already serializes that.
-//
-// Across processes it's a different story since the extension-host migration
-// (docs/decisions/2026-08-26-extension-host-daemon.md): each VS Code window
-// now runs its own daemon process, and these three stores are deliberately
-// still shared (one os.tmpdir() path, not per-window) because what they track
-// — the single shared Keychain slot's pending state, and per-account plan
-// labels — reflects one underlying reality, not a per-window one; a window
-// that didn't start an add-account flow should still see that one is in
-// progress. A genuine two-window race (both calling setPendingAdd() within
-// the same narrow window) is accepted as a low-probability edge case, same
-// spirit as findWorkbenchPageTarget()'s "refuse to guess" tradeoff in
-// hubRestart.ts — last-write-wins here rather than a cross-process lock.
-//
-// What still matters even in a single process: a crash (SIGKILL, OOM) mid-
-// write must never leave a truncated, unparseable file behind, and a symlink
-// planted at one of these predictable names in the shared os.tmpdir() must
-// never redirect a read or write somewhere unintended.
-//
-// Symlink safety is done with O_NOFOLLOW/O_EXCL open flags at the actual
-// syscall, not a separate lstatSync check-then-act — a check-then-act pair
-// leaves a race window where a symlink planted between the check and the
-// real read/write is still followed; a flag on the open() call itself fails
-// atomically instead.
+// knownPlans). No cross-process lock (deliberate — see
+// docs/decisions/2026-08-25-agent-hub-accounts-patterns-adopted.md §1) even
+// though these three stores stay shared across per-window daemons (see
+// docs/decisions/2026-08-26-extension-host-daemon.md). Symlink safety via
+// O_NOFOLLOW/O_EXCL at the syscall, not lstat-check-then-act — same reasoning
+// as docs/decisions/2026-08-26-vendor-agent-hub-accounts.md's files.ts hardening.
 
 import fs from 'fs';
 import { log } from './logger';

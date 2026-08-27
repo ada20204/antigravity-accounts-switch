@@ -1,12 +1,9 @@
 // Covers the gap between "switch accepted" and "Antigravity finished
-// reloading". The daemon answers /api/switch in ~150ms (deliberately, so the
-// reply isn't cut off by the reload it triggers) but the hub respawn plus
-// iframe reload takes ~7s after that. Without this the user confirms, sees
-// nothing happen, and then the whole panel blanks and reloads unannounced.
-//
-// On success nobody closes this: the iframe reload wipes it, which is exactly
-// the moment the new account is actually live. The timeout only exists so a
-// failed restart can't leave a permanent modal behind.
+// reloading" (~7s, see docs/FLOWS.md's switch flow and
+// docs/decisions/2026-08-22-same-port-respawn-optimization.md). On success
+// nobody closes this — the iframe reload wipes it, which is the completion
+// signal. The timeout only exists so a failed restart doesn't leave a
+// permanent modal behind.
 
 export interface ProgressHandle {
   close(): void;

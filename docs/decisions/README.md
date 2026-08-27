@@ -11,7 +11,7 @@
 - [前端写死了 63820,多窗口下会连到别的窗口的 daemon](./2026-08-26-daemon-port-was-hardcoded.md) — 团队架构评审发现:`accountStore.ts` 的 daemon 地址是写死常量,而端口其实按窗口各自分配;第二个窗口的每次操作都会打到第一个窗口的 daemon。改成从注入时写入的全局变量读取。
 - [(已被取代)cliRunner.ts 写死的 keychain.js 路径已经过期](./2026-08-26-cliRunner-stale-keychain-path.md) — agent-hub-accounts 自己重构挪了模块位置,我们没同步,导致 `isKeychainActiveAvailable()` 静默假装已登录、`detachActiveKeychainLogin()` 每次必炸,添加账号流程直接在第一步失败;当时只是把路径修对,耦合本身没解决——`cliRunner.ts` 连同这个耦合已在 [`2026-08-26-vendor-agent-hub-accounts.md`](./2026-08-26-vendor-agent-hub-accounts.md) 里整个移除。
 - [实验(已失败,已回退):添加账号的整窗口 reload 能不能换成"重启 extension host"](./2026-08-26-extension-host-restart-experiment.md) — 现场测试:`workbench.action.restartExtensionHost` 触发的进程销毁比 `begin()` 写入 backup 账号记录还快,导致用户被留在登出状态且没有可恢复的记录(已手动切回,凭据没丢)。顺带修了一个独立 bug:rescue banner 一旦渲染就再也不更新,账号列表从 0 变到非 0 之后按钮不会补上。
-- [添加账号流程的状态为什么落盘,knownAccountIds 是干什么的](./add-account-state-persistence.md) — pendingAdd/lastAddedAccountId 必须落盘(daemon/extension host 都可能重启),knownAccountIds 用来区分"新账号登录"和"换到另一个已保存账号";顺带收了横幅为什么只在主面板显示、轮询频率为什么自适应这两条(原来散落在 FLOWS.md)。
+- [添加账号流程的状态为什么落盘,knownAccountIds 是干什么的](./add-account-state-persistence.md) — pendingAdd/lastAddedAccountId 必须落盘(daemon/extension host 都可能重启),knownAccountIds 用来区分"新账号登录"和"换到另一个已保存账号";顺带收了横幅为什么不能是普通弹窗、为什么没有 Done 按钮、为什么只在主面板显示、轮询频率为什么自适应这几条。
 - [Hub 回收器为什么分两层(owned/unowned)](./hub-reaper-two-tier-ownership.md) — owned 精确快速回收,unowned 靠连续两次孤立观测+至少两个 hub 同时存在才动手,两层加起来才不会在 daemon 重启后丢失回收能力。
 - [注入检测从轮询改成事件驱动](./2026-08-26-event-driven-cdp-detection.md) — 排查了全项目 5 处轮询,只改了真正影响用户感知延迟的两处:CDP target 发现(2s 轮询→`Target.setDiscoverTargets` 事件,现场验证过同 URL 原地 reload 2ms 内就有事件)、前端等 DOM 出现(1.5s 轮询→`MutationObserver`);hub 健康检查、进程退出等待、账号数据后台刷新这三处轮询排查后确认不值得改。
 - [daemon 折进 extension host,取代 LaunchAgent](./2026-08-26-extension-host-daemon.md) — 参考用户自己的 `antigravity-sync-mcp` 项目:`activate()`/`deactivate()` 本身就是完整的进程生命周期管理,不需要独立 daemon 进程;顺带发现并修了两个新问题——CDP 9222 端口全 VS Code 实例共享(不是每窗口一个)、`findHubPids()` 原来没有按窗口过滤——以及一个新出现的跨进程竞态(`addAccountBeginInFlight` 改成文件锁)。
@@ -46,6 +46,7 @@
 - [两个流程复盘](./2026-08-23-two-incidents-retro.md) — 添加账号后忘了重启 hub 导致会话仍在旧账号上;切换时 7 秒零反馈没有加载提示;记录了尚未验证的 `ANTIGRAVITY_OPEN_URL` 免 Terminal 设想。
 - [⚠️ 永远不要裸调 `connect`](./2026-08-23-never-bare-connect-call.md) — 实际损坏过一个账号:不带参数的 `connect` 靠猜邮箱,把凭证写错了档案;改成能确定 ID 就必须显式传,不确定就走可撤销的 snapshot/restore。
 - [又一次账号损坏:自动捕获的猜测机制结构性地不可能猜对](./2026-08-23-account-corruption-guessing-broken.md) — 猜测函数扫的日志目录我们的 hub 从不写入,不是滞后是永远猜不对;改成从原生 Account 面板 DOM 读取真实登录邮箱,彻底去掉猜测。
+- [邮箱叶子节点匹配为什么只在一个地方实现](./email-leaf-matching-dedup.md) — 原来三处独立实现,其中一处用裸 `.includes('@')` 而不是锚定正则,已经漂移出一个真实的误判风险;这个检查是 report-identity 判断该覆盖谁凭证的依据,统一收进 `domUtils.ts` 一份实现。
 - [移除账号:实际语义比"本地忘记"更重](./remove-account-semantics.md) — Remove 会真的删除保存的凭证副本文件,要回来必须重新完整登录,不是点一下就能恢复;文案已按真实语义重写。
 - [切换耗时:计时埋点为什么一开始测不准,以及第一个优化点](./2026-08-22-switch-timing-instrumentation.md) — 第一版计时漏掉了 VS Code 重新初始化整个 workbench 的 35-40s;补齐埋点后拆解出真实耗时构成,并验证了 SIGHUP/Restart Extension Host/serverUrl 后门三条路都走不通。
 - [✅ 真正的优化:同端口自行 respawn(30-36s → ~7s)](./2026-08-22-same-port-respawn-optimization.md) — 打破"必须由 VS Code spawn 新 hub"这个默认前提,自己在同端口起新 hub 只需 reload iframe,砍掉 VS Code 重建整窗口的开销。

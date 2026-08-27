@@ -1,15 +1,6 @@
 // CDP-based UI injector — replaces the bridge.js `<script>` patch (CSP-blocked;
-// see docs/decisions/cdp-injection-vs-bridge-patch.md).
-//
-// Event-driven, not polled: a persistent WebSocket to the browser-level CDP
-// endpoint subscribes to Target.setDiscoverTargets, which delivers an
-// immediate targetCreated burst for every existing target on connect and a
-// targetInfoChanged event on every subsequent navigation — including a
-// same-URL window.location.reload() on an existing target (verified live:
-// fires ~2ms after the reload call, same targetId preserved). That covers
-// both the cold-start case and the every-switch same-port-respawn iframe
-// reload, which is the actual common case, not just a rare one — see
-// docs/decisions/2026-08-26-event-driven-cdp-detection.md.
+// see docs/decisions/cdp-injection-vs-bridge-patch.md). Event-driven, not
+// polled — see docs/decisions/2026-08-26-event-driven-cdp-detection.md.
 
 import { log } from './logger';
 import { getOwnHubPorts } from './hubRestart';

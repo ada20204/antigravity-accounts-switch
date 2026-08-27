@@ -1,15 +1,7 @@
-// Shared leaf-text-node + email matching.
-//
-// This exact check used to be copy-pasted three times (semanticLocator.ts's
-// findProfileTrigger and findAccountPanelEmail, profileSyncAdapter.ts's
-// syncBottomTrigger) — and the three copies had already drifted apart:
-// profileSyncAdapter.ts used a bare `.includes('@')` instead of the anchored
-// regex the other two used, so any leaf node merely containing '@' (a stray
-// icon title, not a real email) got silently treated as the profile's email
-// node and overwritten. This check is safety-critical — it is what
-// report-identity trusts to decide which account's credentials to overwrite
-// (see docs/decisions/2026-08-23-account-corruption-guessing-broken.md) — so it now exists in exactly one
-// place all three call sites import.
+// Shared leaf-text-node + email matching, safety-critical (report-identity
+// trusts it to pick which account's credentials to overwrite). See
+// docs/decisions/email-leaf-matching-dedup.md for why this used to be three
+// independently-drifting copies.
 
 export const EMAIL_PATTERN = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
 
