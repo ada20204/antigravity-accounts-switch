@@ -2,7 +2,7 @@
   "name": "antigravity-accounts-switch",
   "displayName": "Antigravity Accounts Switch",
   "icon": "assets/icon.png",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Multi-account switcher and Settings quota dashboard for Google Antigravity",
   "publisher": "local",
   "main": "out/daemon/extension.js",
@@ -27,6 +27,7 @@
   "scripts": {
     "dev": "vite",
     "build:runtime": "vite build",
+    "typecheck": "tsc --noEmit",
     "compile": "rm -rf out && tsc -p tsconfig.extension.json",
     "vscode:prepublish": "npm run compile && npm run build:runtime",
     "package": "vsce package --no-dependencies --no-rewrite-relative-links --allow-missing-repository",

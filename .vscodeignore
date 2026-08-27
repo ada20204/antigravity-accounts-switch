@@ -3,6 +3,7 @@ test/**
 docs/**
 scripts/**
 .git/**
+.github/**
 .claude/**
 .gitignore
 *.map
