@@ -1,12 +1,12 @@
 # Antigravity Accounts Switch
 
-给 Google Antigravity(VS Code 扩展)注入的多账号增强插件:左下角账号面板 + Settings 页配额卡片,一键在多个已连接的 Google 账号间切换、添加新账号、查看各账号的配额和等级。
+给 Google Antigravity(VS Code 扩展)注入的多账号增强插件:左下角账号面板 + Settings 页配额卡片,一键在多个已连接的 Google 账号间切换、添加新账号、查看各账号的配额和等级、导出/导入账号数据。
 
 ## 组成
 
-- `src/daemon/` —— 本地 HTTP 桥接服务,现在跑在 Antigravity 自己的 extension host 进程里(`extension.ts` 的 `activate()`),不再是独立进程;每个 VS Code 窗口各自的实例在 63820-63829 里自动挑一个空闲端口。封装调度 [`agent-hub-accounts`](../agent-hub-accounts) CLI,管理 Antigravity 的 `agy --hub` 进程生命周期。
+- `src/daemon/` —— 本地 HTTP 桥接服务,跑在 Antigravity 自己的 extension host 进程里(`extension.ts` 的 `activate()`),不是独立进程;每个 VS Code 窗口各自的实例在 63820-63829 里自动挑一个空闲端口。账号管理核心(`accounts/`)是 vendor 自 [`agent-hub-accounts`](../agent-hub-accounts) 的代码,不再依赖外部 CLI;同时管理 Antigravity 的 `agy --hub` 进程生命周期(按窗口的 workspace folder 过滤,只管自己那份)。
 - `src/runtime/` —— 注入进 Antigravity webview 的前端代码(CDP 注入,非常规 `<script src>`,页面 CSP 封死了那条路)。
-- `scripts/` —— bridge.js 的 patch/unpatch(历史方案)、Keychain 诊断脚本。
+- `scripts/` —— bridge.js 的 patch/unpatch(历史方案,已被 CDP 注入取代)、Keychain 诊断脚本。
 
 ## 运行前提
 
