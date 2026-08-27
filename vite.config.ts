@@ -17,6 +17,6 @@ export default defineConfig({
       formats: ['iife']
     },
     outDir: 'dist',
-    emptyOutDir: false
+    emptyOutDir: true
   }
 });
