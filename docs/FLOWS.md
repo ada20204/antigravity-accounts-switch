@@ -22,11 +22,11 @@
 
 **前提**:`credentials/` 目录为空,localStorage 无缓存。
 
-1. runtime 注入后立刻 `fetchLiveAccounts()` → daemon `list --json` → 返回空列表。
+1. runtime 注入后立刻 `fetchLiveAccounts()` → `GET /api/accounts`(进程内调用 `accountService.overview()`)→ 返回空列表。
 2. UI 显示**空状态**,不再伪造数据:
-   - 弹窗:摘要显示 "No accounts connected"、徽章 `—`、列表提示 "No accounts connected yet…"
-   - Settings 卡片:徽章显示 "No accounts connected",网格里同样是提示文案
-3. 用户此时若已经登录着 Antigravity(常见:装完插件正常在用),点 **Add new account** 并不需要走完整登出——但当前实现一律走"登出→登录"流程,这一步目前 UI 上没有更省事的入口(见 [`ISSUES.md`](./ISSUES.md))。
+   - 弹窗:摘要显示 "No accounts connected"、徽章 `—`、列表提示如果 Antigravity 已经登录着可以去 Settings 用一键收编,否则用 Add new account
+   - Settings 卡片:徽章显示 "No accounts connected",网格里同样是提示文案——如果检测到原生 Account 面板当前有登录(`findAccountPanelEmail()` 非空),额外渲染一个 **Use current login** 按钮
+3. 用户此时若已经登录着 Antigravity(常见:装完插件正常在用),不需要走完整登出:点 Settings 卡片里的 **Use current login** 直接 `connect` 收编当前登录,不碰 Keychain 之外的任何东西。**Add new account**(弹窗底部)仍然是登出→登录流程,适合"换一个新账号"的场景。见 [`decisions/2026-08-27-adopt-current-login.md`](./decisions/2026-08-27-adopt-current-login.md)。
 
 > 历史 bug:这里原本会往 localStorage 塞三个硬编码账号(真实邮箱 + 编造的 91%/100%/0% 配额),渲染得和真数据一模一样。已改为返回空列表。
 

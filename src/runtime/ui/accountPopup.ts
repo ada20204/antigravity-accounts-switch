@@ -71,8 +71,9 @@ function renderPopupContent(container: HTMLElement) {
     <div class="ag-switch-subs-list">
       ${accounts.length === 0 ? `
         <div class="ag-switch-empty">
-          No accounts connected yet. Use “Add new account” below to connect the
-          account you are signed in with.
+          No accounts connected yet. If Antigravity is already signed in, open
+          Settings → General for a one-click "Use current login" option —
+          otherwise use "Add new account" below, which signs you out first.
         </div>
       ` : ''}
       ${accounts.map(acc => `

@@ -9,5 +9,3 @@
 - **`export`/`import` 账号功能还没接进我们的 UI**。`src/daemon/accounts/`(vendor 自 agent-hub-accounts,见 `2026-08-26-vendor-agent-hub-accounts.md`)还没搬 `transfer.ts`——已经确认了它的行为(事务性回滚、bundle 里含真实凭据)和"应该走 vscode.window.showOpenDialog/showSaveDialog"这个方向,但接入方案(daemon 新路由、UI 入口放哪)还没有正式定下来。
 
 - **除 Keychain 和会话缓存外,是否还有第三处登录态来源没查清**。清掉 Keychain 槽位 + `~/.gemini/jetski-standalone-oauth-token` 这两处**通常**能让 Antigravity 显示登录页,但实测出现过清掉后仍是登录态的情况——`finish` 因此设计成不依赖任何文件是否存在来判断,只认"`connect` 能不能读到活动凭证",绕开了这个问题而不是解决它。
-
-- **全新状态(空账号列表)下,没有"收编当前已登录账号"的入口**。如果用户装完插件时 Antigravity 本来就登录着,现在点 Add new account 会走一遍完整的登出→登录流程;更省事的做法是先做一次 `connect` 把现有登录直接收编,不需要真的登出再登回来,但这条路径目前 UI 上没有入口。

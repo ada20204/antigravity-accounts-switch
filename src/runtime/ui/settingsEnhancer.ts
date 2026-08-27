@@ -90,9 +90,17 @@ function renderSettingsCard(card: HTMLElement, force = false) {
   const accounts = AccountStore.getAccounts();
   const { averagePercent, count } = AccountStore.getTotalQuota();
 
+  // Only checked when the list is empty — one DOM scan, same cost as
+  // findAccountPlanLabel() above. Lets a fresh install (or one where every
+  // saved account got removed) adopt whatever Antigravity is already signed
+  // into directly, instead of the only other path being a full sign-out →
+  // sign-in round trip. See docs/decisions/2026-08-27-adopt-current-login.md.
+  const currentLoginEmail = accounts.length === 0 ? SemanticLocator.findAccountPanelEmail() : null;
+
   const signature = JSON.stringify([
     averagePercent,
     count,
+    currentLoginEmail,
     accounts.map(a => [a.id, a.name, a.quotaPercent, a.isActive, a.issue ?? '', a.geminiWeekly ?? '', a.gemini5h ?? '']),
   ]);
   if (shouldSkipRender(card, signature, force)) return;
@@ -113,6 +121,11 @@ function renderSettingsCard(card: HTMLElement, force = false) {
         <div class="ag-switch-empty">
           No accounts connected yet. Open the account menu in the bottom-left
           corner and choose “Add new account” to connect one.
+          ${currentLoginEmail ? `
+            <div style="margin-top:10px;">
+              <button class="ag-card-add-btn" id="ag-adopt-current-login">Use current login (${escapeHtml(currentLoginEmail)})</button>
+            </div>
+          ` : ''}
         </div>
       ` : ''}
       ${accounts.map(acc => {
@@ -186,6 +199,23 @@ function renderSettingsCard(card: HTMLElement, force = false) {
       }
       renderSettingsCard(card);
     });
+  });
+
+  card.querySelector('#ag-adopt-current-login')?.addEventListener('click', async () => {
+    if (!currentLoginEmail) return;
+    const proceed = await showConfirm(
+      `Save ${currentLoginEmail} as a connected account?\n\n` +
+      'This does not sign you out or change anything in Antigravity — it just ' +
+      'remembers this login so you can switch back to it later.'
+    );
+    if (!proceed) return;
+    const btn = card.querySelector('#ag-adopt-current-login') as HTMLElement;
+    if (btn) btn.textContent = 'Saving…';
+    const result = await AccountStore.triggerConnect(currentLoginEmail);
+    if (!result.ok) {
+      await showAlert(`Could not save ${currentLoginEmail}: ${result.error}`);
+    }
+    renderSettingsCard(card, true);
   });
 
   card.querySelector('#ag-settings-refresh-all')?.addEventListener('click', async () => {
