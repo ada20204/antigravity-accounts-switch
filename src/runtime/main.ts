@@ -111,7 +111,7 @@ function ensureProfileBadge(): void {
   positionBadge(badgeInstance, trigger);
 }
 
-(window as any).AntigravityEnhancerRuntime = {
+(window as any).AntigravitySwitchRuntime = {
   createPopup: createAccountPopup,
   togglePopup: togglePopup,
   locateTrigger: () => SemanticLocator.findProfileTrigger()

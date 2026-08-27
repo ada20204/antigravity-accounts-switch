@@ -11,8 +11,8 @@ function initial(name: string): string {
 
 export function createAccountPopup(): HTMLElement {
   const container = document.createElement('div');
-  container.className = 'ag-enhancer-popup';
-  container.id = 'ag-enhancer-multi-account-popup';
+  container.className = 'ag-switch-popup';
+  container.id = 'ag-switch-multi-account-popup';
 
   renderPopupContent(container);
 
@@ -49,57 +49,57 @@ function renderPopupContent(container: HTMLElement) {
   if (shouldSkipRender(container, signature)) return;
 
   container.innerHTML = `
-    <div class="ag-enhancer-header">
-      <div class="ag-enhancer-avatar" style="background:${activeAccount?.color || '#6b7280'};">${initial(activeAccount?.name || '?')}</div>
-      <span class="ag-enhancer-user-name">${escapeHtml(activeAccount?.name || 'User')}</span>
+    <div class="ag-switch-header">
+      <div class="ag-switch-avatar" style="background:${activeAccount?.color || '#6b7280'};">${initial(activeAccount?.name || '?')}</div>
+      <span class="ag-switch-user-name">${escapeHtml(activeAccount?.name || 'User')}</span>
     </div>
 
-    <div class="ag-enhancer-summary-card">
-      <div class="ag-enhancer-summary-left">
-        <svg class="ag-enhancer-summary-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <div class="ag-switch-summary-card">
+      <div class="ag-switch-summary-left">
+        <svg class="ag-switch-summary-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="12" cy="12" r="10"/>
           <path d="M12 6v6l4 2"/>
         </svg>
-        <div class="ag-enhancer-summary-text">
-          <div class="ag-enhancer-summary-title">${count === 0 ? 'No accounts connected' : 'Best account remaining'}</div>
-          <div class="ag-enhancer-summary-sub">${count} connected account${count === 1 ? '' : 's'}</div>
+        <div class="ag-switch-summary-text">
+          <div class="ag-switch-summary-title">${count === 0 ? 'No accounts connected' : 'Best account remaining'}</div>
+          <div class="ag-switch-summary-sub">${count} connected account${count === 1 ? '' : 's'}</div>
         </div>
       </div>
-      <div class="ag-enhancer-total-badge">${count === 0 ? '—' : `${bestPercent}%`}</div>
+      <div class="ag-switch-total-badge">${count === 0 ? '—' : `${bestPercent}%`}</div>
     </div>
 
-    <div class="ag-enhancer-subs-list">
+    <div class="ag-switch-subs-list">
       ${accounts.length === 0 ? `
-        <div class="ag-enhancer-empty">
+        <div class="ag-switch-empty">
           No accounts connected yet. Use “Add new account” below to connect the
           account you are signed in with.
         </div>
       ` : ''}
       ${accounts.map(acc => `
-        <div class="ag-enhancer-sub-item ${acc.isActive ? 'active' : ''}" data-account-id="${escapeHtml(acc.id)}">
-          <div class="ag-enhancer-sub-left">
+        <div class="ag-switch-sub-item ${acc.isActive ? 'active' : ''}" data-account-id="${escapeHtml(acc.id)}">
+          <div class="ag-switch-sub-left">
             <div class="ag-dot ag-dot-avatar" style="background-color: ${acc.color};">${initial(acc.name)}</div>
-            <div class="ag-enhancer-sub-info">
-              <div class="ag-enhancer-sub-name">${escapeHtml(acc.name)} · ${escapeHtml(acc.plan)}</div>
-              <div class="ag-enhancer-sub-dots">${acc.issue ? `<span style="color:#ef4444;font-size:10px;">${escapeHtml(acc.issue)}</span>` : acc.tokenMask}</div>
+            <div class="ag-switch-sub-info">
+              <div class="ag-switch-sub-name">${escapeHtml(acc.name)} · ${escapeHtml(acc.plan)}</div>
+              <div class="ag-switch-sub-dots">${acc.issue ? `<span style="color:#ef4444;font-size:10px;">${escapeHtml(acc.issue)}</span>` : acc.tokenMask}</div>
             </div>
           </div>
-          <div class="ag-enhancer-sub-percent" style="${acc.issue ? 'color:#ef4444;' : ''}">
+          <div class="ag-switch-sub-percent" style="${acc.issue ? 'color:#ef4444;' : ''}">
             ${acc.issue ? '0%' : `${acc.quotaPercent}%`}
           </div>
         </div>
       `).join('')}
     </div>
 
-    <div class="ag-enhancer-actions">
-      <button class="ag-enhancer-action-btn" id="ag-add-sub-btn">
+    <div class="ag-switch-actions">
+      <button class="ag-switch-action-btn" id="ag-add-sub-btn">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
         Add new account
       </button>
     </div>
   `;
 
-  container.querySelectorAll('.ag-enhancer-sub-item').forEach(item => {
+  container.querySelectorAll('.ag-switch-sub-item').forEach(item => {
     item.addEventListener('click', async (e) => {
       e.stopPropagation();
       const el = e.currentTarget as HTMLElement;

@@ -61,10 +61,10 @@ docs/          见上表
    编译到 `out/`)+ Antigravity 里 "Reload Window"。改 `src/runtime/` 的代码走
    `npm run dev`(Vite),daemon 自己 serve 的是 `npm run build:runtime` 的产物,
    改完前端代码同样要重新构建(或跑 dev server 临时调试,见下)。
-4. **日志有两处**:文件在 `$TMPDIR/antigravity-accounts-enhancer.log`(macOS 上
+4. **日志有两处**:文件在 `$TMPDIR/antigravity-accounts-switch.log`(macOS 上
    在 `/var/folders/...`,不是 `/tmp`,每个窗口的 daemon 都写同一份),排查从
    tail 这个文件开始,主要 tag:`[SWITCH]` `[TIMING]` `[HUB_RESTART]` `[HUB_REAP]`
    `[ADD_ACCOUNT]` `[FRONTEND]`。VS Code 里 `View > Output`,选 "Antigravity
-   Accounts" 频道,能看到同样内容的一个精简版(`REQ`/`FRONTEND` 这类高频 tag 默认
-   不显示,打开设置 `antigravityAccountsEnhancer.verboseLogging` 才会显示——文件
+   Accounts Switch" 频道,能看到同样内容的一个精简版(`REQ`/`FRONTEND` 这类高频 tag 默认
+   不显示,打开设置 `antigravityAccountsSwitch.verboseLogging` 才会显示——文件
    里永远都有,只是 Output 面板默认过滤掉高噪音的)。

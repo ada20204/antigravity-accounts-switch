@@ -68,15 +68,15 @@ const HUB_TOKEN_FILE = path.join(os.homedir(), '.gemini', 'jetski-standalone-oau
 // Persisted to disk (not in-memory) so a daemon restart mid-flow can't drop
 // it; knownAccountIds distinguishes a genuinely new sign-in from switching to
 // an already-saved account. See docs/decisions/add-account-state-persistence.md.
-const PENDING_ADD_SCHEMA = 'antigravity-accounts-enhancer.pending_add.v1';
+const PENDING_ADD_SCHEMA = 'antigravity-accounts-switch.pending_add.v1';
 interface PendingAdd {
   schema: typeof PENDING_ADD_SCHEMA;
   backupAccountId: string;
   startedAt: number;
   knownAccountIds: string[];
 }
-const PENDING_ADD_FILE = path.join(os.tmpdir(), 'antigravity-accounts-enhancer-pending-add.json');
-const LAST_ADDED_FILE = path.join(os.tmpdir(), 'antigravity-accounts-enhancer-last-added.json');
+const PENDING_ADD_FILE = path.join(os.tmpdir(), 'antigravity-accounts-switch-pending-add.json');
+const LAST_ADDED_FILE = path.join(os.tmpdir(), 'antigravity-accounts-switch-last-added.json');
 
 function loadPendingAdd(): PendingAdd | null {
   return loadJsonFile(PENDING_ADD_FILE, parsed => {
@@ -99,7 +99,7 @@ function loadPendingAdd(): PendingAdd | null {
   });
 }
 
-const LAST_ADDED_SCHEMA = 'antigravity-accounts-enhancer.last_added.v1';
+const LAST_ADDED_SCHEMA = 'antigravity-accounts-switch.last_added.v1';
 
 function loadLastAddedAccountId(): string | null {
   return loadJsonFile(LAST_ADDED_FILE, parsed => {
@@ -119,8 +119,8 @@ function loadLastAddedAccountId(): string | null {
 // docs/decisions/2026-08-23-account-plan-tier.md.
 // Filename (not just content) carries the version — a structural shape
 // change, not an additive one; see docs/decisions/2026-08-25-review-14-findings-fixed.md.
-const PLAN_STORE_FILE = path.join(os.tmpdir(), 'antigravity-accounts-enhancer-plans-v1.json');
-const KNOWN_PLANS_SCHEMA = 'antigravity-accounts-enhancer.known_plans.v1';
+const PLAN_STORE_FILE = path.join(os.tmpdir(), 'antigravity-accounts-switch-plans-v1.json');
+const KNOWN_PLANS_SCHEMA = 'antigravity-accounts-switch.known_plans.v1';
 
 function loadKnownPlans(): Record<string, string> {
   return loadJsonFile(PLAN_STORE_FILE, parsed => {
@@ -134,7 +134,7 @@ function loadKnownPlans(): Record<string, string> {
 // docs/decisions/2026-08-26-extension-host-daemon.md). Separate from
 // `pendingAdd`: that isn't written until after several awaits, leaving a race
 // window an in-memory-only guard couldn't close across processes.
-const ADD_ACCOUNT_LOCK_FILE = path.join(os.tmpdir(), 'antigravity-accounts-enhancer-add-account.lock');
+const ADD_ACCOUNT_LOCK_FILE = path.join(os.tmpdir(), 'antigravity-accounts-switch-add-account.lock');
 // Generous margin above begin()'s worst realistic runtime — reclaims the lock
 // if a daemon died mid-flow without releasing it, so a crash can't wedge
 // add-account shut forever.
@@ -277,9 +277,9 @@ function listenOnFreePort(server: http.Server, startPort: number, endPort: numbe
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  const outputChannel = vscode.window.createOutputChannel('Antigravity Accounts');
+  const outputChannel = vscode.window.createOutputChannel('Antigravity Accounts Switch');
   context.subscriptions.push(outputChannel);
-  const verboseLogging = vscode.workspace.getConfiguration('antigravityAccountsEnhancer').get<boolean>('verboseLogging', false);
+  const verboseLogging = vscode.workspace.getConfiguration('antigravityAccountsSwitch').get<boolean>('verboseLogging', false);
   configureLogger(outputChannel, verboseLogging);
 
   setOwnWorkspacePaths((vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath));
@@ -465,7 +465,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (url.pathname === '/api/login' && req.method === 'POST') {
         // No dynamic account id is interpolated into this script, so unlike
         // the JSON API handlers above it doesn't need execFile's injection fix.
-        const scriptPath = path.join(os.tmpdir(), `ag-enhancer-login-${Date.now()}.sh`);
+        const scriptPath = path.join(os.tmpdir(), `ag-switch-login-${Date.now()}.sh`);
         fs.writeFileSync(scriptPath, buildLoginTerminalScript(port), { mode: 0o700 });
 
         // Two separate -e args so the window is focused as well as opened.

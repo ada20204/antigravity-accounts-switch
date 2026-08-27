@@ -120,14 +120,14 @@ Antigravity 显示原生登录页(全程原生,我们不介入)
 1. **点添加横幅上的 Cancel** —— 添加流程进行中时的正常出口,`switch <备份账号>` 切回登出前那个。
 2. **在弹窗里直接点任意一个已有账号** —— `/api/switch` 不关心 pending 状态,照常工作。daemon 的监视器会发现"当前登录变成了一个已知账号",据此判定添加流程被放弃并清掉 pending(2s 内),不会误报"添加了新账号"。
 3. **`agent-hub-accounts switch <邮箱>`**(Terminal)—— UI 完全不可用时(daemon 挂了、CDP 没连上、注入还没发生)用这条。它才是真正的底层操作,前两条最终也是调它。
-4. **删掉 `$TMPDIR/antigravity-accounts-enhancer-pending-add.json`** —— 只在 pending 状态卡住(横幅赖着不走)时需要,单独做这一步不改变任何登录态。
+4. **删掉 `$TMPDIR/antigravity-accounts-switch-pending-add.json`** —— 只在 pending 状态卡住(横幅赖着不走)时需要,单独做这一步不改变任何登录态。
 
 > 注意第 2 条对应的一个 bug 曾经存在:监视器原来只比对"是不是备份账号",于是切到**其它**已有账号会被当成新账号登录,弹一句 "Added X" —— 而那个账号本来就在列表里。现在改为比对 `begin` 时记录的完整已知账号集合。
 
 ### 横幅由 daemon 驱动,不在页面里
 
 `begin` 会重载 webview,页面持有的任何状态都会没,所以"进行中"这个标志存在
-daemon、持久化到磁盘(`$TMPDIR/antigravity-accounts-enhancer-pending-add.json`)。
+daemon、持久化到磁盘(`$TMPDIR/antigravity-accounts-switch-pending-add.json`)。
 原因见 [`decisions/add-account-state-persistence.md`](./decisions/add-account-state-persistence.md)。
 
 行为:

@@ -110,7 +110,7 @@ function renderSettingsCard(card: HTMLElement, force = false) {
     
     <div class="ag-card-grid">
       ${accounts.length === 0 ? `
-        <div class="ag-enhancer-empty">
+        <div class="ag-switch-empty">
           No accounts connected yet. Open the account menu in the bottom-left
           corner and choose “Add new account” to connect one.
         </div>

@@ -12,7 +12,7 @@ export default defineConfig({
   build: {
     lib: {
       entry: resolve(__dirname, 'src/runtime/main.ts'),
-      name: 'AntigravityEnhancerRuntime',
+      name: 'AntigravitySwitchRuntime',
       fileName: () => 'runtime.js',
       formats: ['iife']
     },

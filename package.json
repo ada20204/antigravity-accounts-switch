@@ -1,8 +1,9 @@
 {
-  "name": "antigravity-accounts-enhancer",
-  "displayName": "Antigravity Accounts Enhancer",
+  "name": "antigravity-accounts-switch",
+  "displayName": "Antigravity Accounts Switch",
+  "icon": "assets/icon.png",
   "version": "1.0.0",
-  "description": "Live Hot-Reload Multi-Account & UI Enhancer for Google Antigravity",
+  "description": "Multi-account switcher and Settings quota dashboard for Google Antigravity",
   "publisher": "local",
   "main": "out/daemon/extension.js",
   "engines": {
@@ -13,12 +14,12 @@
   "activationEvents": ["onStartupFinished"],
   "contributes": {
     "configuration": {
-      "title": "Antigravity Accounts Enhancer",
+      "title": "Antigravity Accounts Switch",
       "properties": {
-        "antigravityAccountsEnhancer.verboseLogging": {
+        "antigravityAccountsSwitch.verboseLogging": {
           "type": "boolean",
           "default": false,
-          "description": "Show high-volume request/frontend log lines in the Antigravity Accounts Output Channel (they always go to the log file regardless)."
+          "description": "Show high-volume request/frontend log lines in the Antigravity Accounts Switch Output Channel (they always go to the log file regardless)."
         }
       }
     }
@@ -26,7 +27,7 @@
   "scripts": {
     "dev": "vite",
     "build:runtime": "vite build",
-    "compile": "tsc -p tsconfig.extension.json",
+    "compile": "rm -rf out && tsc -p tsconfig.extension.json",
     "vscode:prepublish": "npm run compile && npm run build:runtime",
     "package": "vsce package --no-dependencies --no-rewrite-relative-links --allow-missing-repository",
     "patch": "node scripts/patch.mjs",

@@ -202,7 +202,7 @@
    They compose without any JS: when the viewport cap leaves less room than
    --ag-max-rows would need, the list (the only flex child with min-height:0)
    shrinks below its own max-height and scrolls sooner. */
-.ag-enhancer-popup {
+.ag-switch-popup {
   --ag-row-h: 39px;
   --ag-row-gap: 2px;
   --ag-list-pad: 12px;
@@ -233,7 +233,7 @@
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
-.ag-enhancer-header {
+.ag-switch-header {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -246,7 +246,7 @@
    picture available (agent-hub-accounts' route data has no avatar field),
    and showing the exact same stock photo for every account was actively
    misleading (all three accounts looked like the same person). */
-.ag-enhancer-avatar {
+.ag-switch-avatar {
   width: 22px;
   height: 22px;
   border-radius: 50%;
@@ -260,13 +260,13 @@
   text-transform: uppercase;
 }
 
-.ag-enhancer-user-name {
+.ag-switch-user-name {
   font-weight: 500;
   font-size: 13px;
   color: #f3f4f6;
 }
 
-.ag-enhancer-summary-card {
+.ag-switch-summary-card {
   padding: 10px 14px;
   display: flex;
   align-items: center;
@@ -276,32 +276,32 @@
   flex-shrink: 0;
 }
 
-.ag-enhancer-summary-left {
+.ag-switch-summary-left {
   display: flex;
   align-items: center;
   gap: 10px;
 }
 
-.ag-enhancer-summary-icon {
+.ag-switch-summary-icon {
   width: 16px;
   height: 16px;
   color: #9ca3af;
 }
 
-.ag-enhancer-summary-title {
+.ag-switch-summary-title {
   font-weight: 500;
   font-size: 12.5px;
   color: #e5e7eb;
   line-height: 1.25;
 }
 
-.ag-enhancer-summary-sub {
+.ag-switch-summary-sub {
   font-size: 11px;
   color: #9ca3af;
   margin-top: 1px;
 }
 
-.ag-enhancer-total-badge {
+.ag-switch-total-badge {
   font-size: 13.5px;
   font-weight: 600;
   color: #f3f4f6;
@@ -312,7 +312,7 @@
    content height, which is what makes overflow-y actually engage here.
    max-height caps it at --ag-max-rows rows (N rows + N-1 gaps + padding);
    box-sizing keeps that arithmetic honest by counting the padding inside it. */
-.ag-enhancer-subs-list {
+.ag-switch-subs-list {
   padding: 6px 8px;
   display: flex;
   flex-direction: column;
@@ -331,7 +331,7 @@
    compressed by the popup's viewport cap — the list must scroll instead.
    The row height is what --ag-max-rows arithmetic assumes, so nothing inside
    may wrap to a second line (see the ellipsis rules below). */
-.ag-enhancer-sub-item {
+.ag-switch-sub-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -343,15 +343,15 @@
   flex-shrink: 0;
 }
 
-.ag-enhancer-sub-item:hover {
+.ag-switch-sub-item:hover {
   background: rgba(255, 255, 255, 0.06);
 }
 
-.ag-enhancer-sub-item.active {
+.ag-switch-sub-item.active {
   background: rgba(255, 255, 255, 0.08);
 }
 
-.ag-enhancer-sub-left {
+.ag-switch-sub-left {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -375,7 +375,7 @@
   text-transform: uppercase;
 }
 
-.ag-enhancer-sub-info {
+.ag-switch-sub-info {
   display: flex;
   flex-direction: column;
   line-height: 1.2;
@@ -384,7 +384,7 @@
 
 /* Long account names must truncate, not wrap: a wrapped row is taller than
    --ag-row-h, which would make the "10 rows" cap show fewer than 10. */
-.ag-enhancer-sub-name {
+.ag-switch-sub-name {
   font-weight: 500;
   font-size: 12.5px;
   color: #e5e7eb;
@@ -393,14 +393,14 @@
   white-space: nowrap;
 }
 
-.ag-enhancer-sub-dots {
+.ag-switch-sub-dots {
   font-size: 9px;
   letter-spacing: 2px;
   color: #6b7280;
   margin-top: 2px;
 }
 
-.ag-enhancer-empty {
+.ag-switch-empty {
   padding: 12px 10px;
   font-size: 11.5px;
   line-height: 1.5;
@@ -408,7 +408,7 @@
   text-align: center;
 }
 
-.ag-enhancer-sub-percent {
+.ag-switch-sub-percent {
   font-size: 12.5px;
   font-weight: 500;
   color: #d1d5db;
@@ -416,13 +416,13 @@
   white-space: nowrap;
 }
 
-.ag-enhancer-actions {
+.ag-switch-actions {
   border-top: 1px solid rgba(255, 255, 255, 0.06);
   padding: 5px 6px;
   flex-shrink: 0;
 }
 
-.ag-enhancer-action-btn {
+.ag-switch-action-btn {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -438,7 +438,7 @@
   transition: background 0.12s;
 }
 
-.ag-enhancer-action-btn:hover {
+.ag-switch-action-btn:hover {
   background: rgba(255, 255, 255, 0.06);
   color: #fff;
 }

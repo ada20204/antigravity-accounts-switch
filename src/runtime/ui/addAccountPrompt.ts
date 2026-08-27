@@ -141,7 +141,7 @@ function syncRescueBanner(signedOut: boolean): void {
 
   banner.querySelector('#ag-rescue-switch')?.addEventListener('click', (e) => {
     e.stopPropagation();
-    (window as any).AntigravityEnhancerRuntime?.togglePopup();
+    (window as any).AntigravitySwitchRuntime?.togglePopup();
   });
 }
 

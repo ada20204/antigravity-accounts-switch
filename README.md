@@ -1,4 +1,4 @@
-# Antigravity Accounts Enhancer
+# Antigravity Accounts Switch
 
 给 Google Antigravity(VS Code 扩展)注入的多账号增强插件:左下角账号面板 + Settings 页配额卡片,一键在多个已连接的 Google 账号间切换、添加新账号、查看各账号的配额和等级。
 

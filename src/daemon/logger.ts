@@ -5,7 +5,7 @@ import path from 'path';
 // Single persistent log file, independent of however the process was launched
 // (nohup redirect, launchd, plain terminal, or now the extension host) —
 // always readable at a fixed path.
-export const LOG_FILE = path.join(os.tmpdir(), 'antigravity-accounts-enhancer.log');
+export const LOG_FILE = path.join(os.tmpdir(), 'antigravity-accounts-switch.log');
 
 // Every log call always goes to LOG_FILE in full. Whether it ALSO reaches the
 // VS Code Output Channel is gated by tag — REQ and FRONTEND fire on every HTTP
@@ -23,7 +23,7 @@ let outputChannel: OutputChannelLike | undefined;
 let verboseLogging = false;
 
 // Called once from extension.ts's activate() with the real vscode.OutputChannel
-// and the antigravityAccountsEnhancer.verboseLogging setting.
+// and the antigravityAccountsSwitch.verboseLogging setting.
 export function configureLogger(channel: OutputChannelLike | undefined, verbose: boolean): void {
   outputChannel = channel;
   verboseLogging = verbose;

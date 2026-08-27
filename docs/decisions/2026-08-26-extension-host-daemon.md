@@ -38,7 +38,7 @@ daemon 折进 extension host 之后,日志除了原来那份文件,也该能在 
 按现有 tag 实际触发频率分类(不是按 level,这个项目的日志本来就是按 tag 分类的,沿用这个划分维度更自然):
 
 - **默认显示**(一次性或者跟真实用户操作一一对应):`BOOT`、`SWITCH`、`TIMING`、`HUB_RESTART`、`ADD_ACCOUNT`、`CONNECT`、`LOGIN`、`REMOVE`、`PLAN`、`CDP_INJECT`(只在真正注入时记,不在"已存在"的空转 tick 记)、`JSON_STORE`(只在非 ENOENT 的读错误时记)、`HUB_REAP` 里两条真正执行了回收的行。
-- **仅 verbose**(`antigravityAccountsEnhancer.verboseLogging` 打开才在 Output 里显示,文件里始终都有):`REQ`(每个 HTTP 请求都记,频率最高)、`FRONTEND`(前端每次上报都记)、`HUB_REAP` 里"looks orphaned (1/2)"这条计数进度行(会重复打印,不是一次性事件)。
+- **仅 verbose**(`antigravityAccountsSwitch.verboseLogging` 打开才在 Output 里显示,文件里始终都有):`REQ`(每个 HTTP 请求都记,频率最高)、`FRONTEND`(前端每次上报都记)、`HUB_REAP` 里"looks orphaned (1/2)"这条计数进度行(会重复打印,不是一次性事件)。
 
 ## 现场踩的坑:ESM 扩展装上之后完全不激活,且没有任何报错
 

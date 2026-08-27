@@ -76,7 +76,7 @@ async function injectInto(targetId: string, loaderSrc: string, styleSrc: string,
   // instead emits it as a standalone style.css with no auto-loader.
   const expression = `
     (function() {
-      if (window.AntigravityEnhancerRuntime) return 'present';
+      if (window.AntigravitySwitchRuntime) return 'present';
       window.__AG_DAEMON_PORT__ = ${daemonPort};
       var link = document.createElement('link');
       link.rel = 'stylesheet';

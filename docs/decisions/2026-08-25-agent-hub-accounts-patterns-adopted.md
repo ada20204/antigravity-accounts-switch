@@ -20,7 +20,7 @@
 
 ## 3. 持久化状态加 schema 版本标记
 
-三份状态(`PendingAdd`、`LastAddedAccountId`、`knownPlans`)现在都在存盘 JSON 里带一个 `schema: "antigravity-accounts-enhancer.xxx.v1"` 字段,写的时候永远带上,读的时候优先按新 schema 校验,退回兼容"没有这个字段"的老文件(一次性兼容,不是每加一个字段就再叠一层判断)。`knownPlans` 从裸 `Record<string,string>` 包了一层 `{schema, plans}`。
+三份状态(`PendingAdd`、`LastAddedAccountId`、`knownPlans`)现在都在存盘 JSON 里带一个 `schema: "antigravity-accounts-switch.xxx.v1"` 字段,写的时候永远带上,读的时候优先按新 schema 校验,退回兼容"没有这个字段"的老文件(一次性兼容,不是每加一个字段就再叠一层判断)。`knownPlans` 从裸 `Record<string,string>` 包了一层 `{schema, plans}`。
 
 **目前不是强校验网关**——现在只有一个版本,标了 tag 但读的时候还是宽松接受旧形状。价值在于以后真的要改格式时,有一个明确的版本号可以判断"这是哪个形状",不用再靠"这个字段是不是 undefined"去猜测文件是新是旧。
 
