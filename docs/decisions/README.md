@@ -2,6 +2,7 @@
 
 为什么这么做、试过但失败的方案、以及失败的证据——按主题查,不用整份翻。新的在前;标 `(已被取代)`/`(历史)` 的仅供追溯,结论以后出现的同主题条目为准。
 
+- [extension.ts 拆分:路由 vs 装配](./2026-08-27-split-extension-ts-routes.md) — `docs/ISSUES.md` 挂了很久的一条,拆成 `extension.ts`(装配,282 行)+ `routes.ts`(348 行)+ `addAccountRoutes.ts`(275 行,add-account 五个端点单独一份),共享可变状态通过一个 `RouteState` 对象引用传递,不会拿到过期快照。
 - [把 agent-hub-accounts 的账号管理核心搬进本仓库,不再要求用户单独装它](./2026-08-26-vendor-agent-hub-accounts.md) — vendor 约 1500 行零依赖代码进 `src/daemon/accounts/`,存储路径实测和真实安装的 CLI 逐字节一致(含对 137 代真实注册表的只读 golden-diff 验证);调用统一走 `manager.ts` 的双重校验层,不直接摸 `keychain.ts` 原始方法;`finish` 端点不再退化到已验证结构性坏掉的猜测逻辑;`extension.ts` 里一份重复实现凭证文件格式的代码顺带删掉。`cliRunner.ts` 整个移除。
 - [弹窗/Settings 卡片拼 innerHTML 没转义,plan 字段几乎不做校验](./2026-08-26-unescaped-account-fields-in-innerhtml.md) — 团队架构评审发现:`acc.name`/`acc.plan`/`acc.issue`/`acc.id` 直接拼进 `innerHTML`,`/api/report-plan` 的 `label` 几乎不做校验,本机任意网页理论上能借此在真实 webview 里跑脚本;加了 `escapeHtml()` 转义 + 接口侧类型/长度/保留键校验。
 - [begin() 检查能不能 reload,要放在摘凭证之前,不是之后](./2026-08-26-window-reload-precheck.md) — 团队架构评审发现:多于一个 workbench 窗口时 `findWorkbenchPageTarget()` 会拒绝猜,但这个检查原来发生在 `onStopped`(真正登出)跑完之后,导致用户已被登出、`pendingAdd` 却没写入——和已回退的 extension-host-restart 实验是同一失败类别,这次靠正常多窗口使用就能必现;改成先检查能不能 reload,再动 hub/凭证。

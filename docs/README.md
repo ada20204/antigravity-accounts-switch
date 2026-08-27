@@ -17,7 +17,9 @@
 ```
 src/
   daemon/       daemon 逻辑,现在跑在 Antigravity extension host 进程里——见下面"开工前"
-    extension.ts     activate()/deactivate() 入口 + HTTP 路由(原 daemon.ts 的内容整体搬进来)
+    extension.ts     activate()/deactivate() 入口 + server 装配(CORS/静态文件/端口分配),不含 /api/* 业务逻辑
+    routes.ts        /api/* 路由(除 add-account 系列和 /api/log)
+    addAccountRoutes.ts  /api/add-account/* 五个端点,单独一份文件(begin 那条最长)
     hubRestart.ts    agy --hub 进程生命周期管理(现在按 workspace folder 过滤,只管本窗口自己的 hub)
     cdpInjector.ts   往 VS Code webview 注入 runtime bundle 的 CDP 循环(同样按本窗口的 hub 端口过滤)
     accounts/        账号管理核心,vendor 自 agent-hub-accounts(不再要求用户单独装它)——见

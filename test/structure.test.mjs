@@ -27,9 +27,6 @@ const MAX_FILES_PER_DIR = 12;
 // is grandfathered in. Adding an entry (or bumping one's count) should be
 // rare and deliberate, not a way to silence a new violation.
 const LINE_LIMIT_EXCEPTIONS = new Map([
-  // See docs/ISSUES.md — extension.ts is overdue for splitting, not just
-  // another ratchet bump.
-  ['src/daemon/extension.ts', 838],
   ['src/daemon/hubRestart.ts', 651],
 ]);
 

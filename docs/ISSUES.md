@@ -2,8 +2,6 @@
 
 跟 `docs/decisions/`(已经定论、为什么这么做)不同——这份列的是还没做完/还没验证/还没决定的事,做完了从这里删掉,不是标记完成后继续留着。
 
-- **`src/daemon/extension.ts` 该拆了**。从 daemon.ts 折进 extension host 开始,这一份文件被连续改动撑到了 1000+ 行(见 `test/structure.test.mjs` 的行数棘轮记录),已经不是"暂时超限",是真的该拆成路由处理 vs `activate()`/依赖注入两部分。下次改这个文件之前先做这个拆分,不要再单纯往上叠改动。
-
 - **多窗口场景没有现场验证过**。`2026-08-26-extension-host-daemon.md` 里按窗口分配端口、按 `--add-dir` 过滤 hub 归属的设计,只做过代码层面的推导和单窗口测试,没有真正开两个 Antigravity 窗口跑一遍确认端口分配、hub 归属过滤、CDP 注入范围确实按窗口隔离。
 
 - **rescue banner 的账号数 0→N 重渲染修复没有现场验证过**。`2026-08-26-extension-host-restart-experiment.md` 记录的那次事故顺手修了 `syncRescueBanner()` 的"渲染一次就再也不更新"的 bug,改动本身编译测试都过了,但"确实从 0 变到非 0 的那一刻按钮正确出现"这个具体转场还没有真机验证过。
