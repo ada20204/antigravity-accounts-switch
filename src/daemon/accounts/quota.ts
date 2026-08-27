@@ -5,9 +5,9 @@
 // see the doc's quota-refresh note), so put()/fail() and the raw-response
 // parsers upstream also has are dead code for this caller and were dropped.
 
-import { readJson } from './files';
+import { readJson } from './support/files';
 import type { QuotaIssue, QuotaSnapshot, QuotaState } from './types';
-import { AccountStateError } from './files';
+import { AccountStateError } from './support/files';
 
 function emptyState(): QuotaState {
   return { schema: 'agent_hub.account_quota_cache.v3', generation: 0, snapshots: {}, issues: {} };

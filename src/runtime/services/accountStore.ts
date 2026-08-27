@@ -363,6 +363,20 @@ export class AccountStore {
     }
   }
 
+  // The file picker (native VS Code save dialog) runs entirely on the daemon
+  // side — see docs/decisions/2026-08-27-export-import.md. `cancelled: true`
+  // (user closed the dialog) is not an error, callers should treat it as a
+  // silent no-op rather than showing an alert.
+  public static async exportAccounts(): Promise<{ ok: boolean; cancelled?: boolean; accounts?: number; credentials?: number; error?: string }> {
+    return this.postJson('/api/export');
+  }
+
+  public static async importAccounts(): Promise<{ ok: boolean; cancelled?: boolean; imported?: string[]; overwritten?: string[]; credentials?: number; error?: string }> {
+    const result = await this.postJson('/api/import');
+    if (result.ok && !result.cancelled) await this.fetchLiveAccounts();
+    return result;
+  }
+
   public static async refreshAllQuotas(): Promise<void> {
     try {
       await fetch(`${this.DAEMON_URL}/api/quota-refresh`, { method: 'POST' });

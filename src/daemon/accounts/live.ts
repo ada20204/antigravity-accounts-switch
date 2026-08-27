@@ -2,7 +2,7 @@
 // THIRD_PARTY_NOTICES.md and docs/decisions/2026-08-26-vendor-agent-hub-accounts.md.
 
 import { randomUUID } from 'crypto';
-import { AccountStateError, readJson, withFileLock, writeJson } from './files';
+import { AccountStateError, readJson, withFileLock, writeJson } from './support/files';
 import { accountId, providerId } from './identifiers';
 import type { AccountProfile, AuthStatus, BindingStatus, LiveSession, LiveState, LoginOperation, LoginState } from './types';
 

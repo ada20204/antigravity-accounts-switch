@@ -11,7 +11,8 @@ import { AntigravityAccountService } from './manager';
 import { paths } from './paths';
 
 export { paths };
-export { withFileLock, AccountStateError } from './files';
+export { withFileLock, AccountStateError } from './support/files';
+export { exportAccounts, importAccounts } from './transfer';
 export const registry = new AccountRegistry(paths.registryPath);
 export const live = new LiveStore(paths.livePath);
 export const quota = new QuotaCache(paths.quotaPath);

@@ -3,7 +3,7 @@
 // THIRD_PARTY_NOTICES.md and docs/decisions/2026-08-26-vendor-agent-hub-accounts.md.
 
 import { spawnSync } from 'child_process';
-import { AccountStateError } from './files';
+import { AccountStateError } from './support/files';
 import type { KeychainPort } from './keychain';
 import type { LiveStore } from './live';
 

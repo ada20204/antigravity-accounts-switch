@@ -113,6 +113,8 @@ function renderSettingsCard(card: HTMLElement, force = false) {
       </div>
       <div style="display:flex;gap:8px;">
         <button class="ag-card-add-btn" id="ag-settings-refresh-all" title="Switches through every connected account to check its quota — not the same as the official per-account refresh">Check All Accounts</button>
+        <button class="ag-card-add-btn" id="ag-settings-export" title="Save all connected accounts, including their credentials, to a file you choose">Export</button>
+        <button class="ag-card-add-btn" id="ag-settings-import" title="Load accounts from a previously exported file">Import</button>
       </div>
     </div>
     
@@ -227,6 +229,46 @@ function renderSettingsCard(card: HTMLElement, force = false) {
     if (btn) btn.textContent = 'Checking accounts...';
     await AccountStore.refreshAllQuotas();
     // Forced: restores the button label even if no quota figure moved.
+    renderSettingsCard(card, true);
+  });
+
+  card.querySelector('#ag-settings-export')?.addEventListener('click', async () => {
+    if (accounts.length === 0) {
+      await showAlert('No accounts connected yet — nothing to export.');
+      return;
+    }
+    const proceed = await showConfirm(
+      `Export ${accounts.length} account${accounts.length === 1 ? '' : 's'} to a file?\n\n` +
+      'The file will contain your saved Google account credentials in a portable, ' +
+      'NOT encrypted form. Keep it somewhere private — anyone with this file can ' +
+      'sign in as these accounts.'
+    );
+    if (!proceed) return;
+    const result = await AccountStore.exportAccounts();
+    if (result.cancelled) return;
+    if (!result.ok) {
+      await showAlert(`Export failed: ${result.error}`);
+    } else {
+      await showAlert(`Exported ${result.accounts} account${result.accounts === 1 ? '' : 's'} (${result.credentials} with credentials).`);
+    }
+  });
+
+  card.querySelector('#ag-settings-import')?.addEventListener('click', async () => {
+    const proceed = await showConfirm(
+      'Import accounts from a file?\n\n' +
+      'Any account in the file that matches an ID you already have will be ' +
+      'OVERWRITTEN with the file\'s credentials. This cannot be undone. Continue?'
+    );
+    if (!proceed) return;
+    const result = await AccountStore.importAccounts();
+    if (result.cancelled) return;
+    if (!result.ok) {
+      await showAlert(`Import failed: ${result.error}`);
+    } else {
+      const imported = result.imported?.length ?? 0;
+      const overwritten = result.overwritten?.length ?? 0;
+      await showAlert(`Imported ${imported} new account${imported === 1 ? '' : 's'}, overwrote ${overwritten}.`);
+    }
     renderSettingsCard(card, true);
   });
 }

@@ -6,6 +6,4 @@
 
 - **rescue banner 的账号数 0→N 重渲染修复没有现场验证过**。`2026-08-26-extension-host-restart-experiment.md` 记录的那次事故顺手修了 `syncRescueBanner()` 的"渲染一次就再也不更新"的 bug,改动本身编译测试都过了,但"确实从 0 变到非 0 的那一刻按钮正确出现"这个具体转场还没有真机验证过。
 
-- **`export`/`import` 账号功能还没接进我们的 UI**。`src/daemon/accounts/`(vendor 自 agent-hub-accounts,见 `2026-08-26-vendor-agent-hub-accounts.md`)还没搬 `transfer.ts`——已经确认了它的行为(事务性回滚、bundle 里含真实凭据)和"应该走 vscode.window.showOpenDialog/showSaveDialog"这个方向,但接入方案(daemon 新路由、UI 入口放哪)还没有正式定下来。
-
 - **除 Keychain 和会话缓存外,是否还有第三处登录态来源没查清**。清掉 Keychain 槽位 + `~/.gemini/jetski-standalone-oauth-token` 这两处**通常**能让 Antigravity 显示登录页,但实测出现过清掉后仍是登录态的情况——`finish` 因此设计成不依赖任何文件是否存在来判断,只认"`connect` 能不能读到活动凭证",绕开了这个问题而不是解决它。

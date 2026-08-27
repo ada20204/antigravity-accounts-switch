@@ -1,7 +1,7 @@
 // Vendored from agent-hub-accounts (MIT), verbatim — see
 // THIRD_PARTY_NOTICES.md and docs/decisions/2026-08-26-vendor-agent-hub-accounts.md.
 
-import { AccountStateError } from './files';
+import { AccountStateError } from './support/files';
 
 const PROVIDER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/;
 const ACCOUNT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;

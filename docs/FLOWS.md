@@ -65,6 +65,14 @@
 
 移除会删掉 `credentials/<id>.json`,所以之后**无法再切回该账号**,要重新完整登录;但不撤销 Google 授权、不登出。
 
+### 导出/导入账号(Settings 卡片)
+
+`Export`/`Import` → 确认 → `POST /api/export`/`/api/import` → daemon 弹原生
+`showSaveDialog`/`showOpenDialog` 选文件 → 读写 bundle。两者都**不碰 Keychain
+活跃槽位**,不会让任何人被登出/登入,不需要重启 hub。导入会**覆盖**已存在的
+同 id 账号的凭证,不可撤销;导出的文件里含真实凭据,明文,不加密。见
+[`decisions/2026-08-27-export-import.md`](./decisions/2026-08-27-export-import.md)。
+
 ---
 
 ## 场景 3:登出并添加新账号

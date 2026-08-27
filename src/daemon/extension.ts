@@ -25,6 +25,7 @@ import { log, LOG_FILE, configureLogger } from './logger';
 import { readJsonBody, respondError, isAllowedOrigin } from './httpUtils';
 import { loadJsonFile, saveJsonFile } from './jsonStore';
 import { createApiRouter, PENDING_ADD_SCHEMA, type PendingAdd, type RouteState } from './routes';
+import { createTransferRouter } from './transferRoutes';
 
 // This window's own daemon port — allocated in activate(), not a fixed
 // constant any more (a second window's extension host would hit EADDRINUSE
@@ -200,6 +201,29 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     releaseBeginLock,
   });
 
+  // The file picker is the one piece of /api/export|import that has to run
+  // in the extension host — routes/transferRoutes stay vscode-free like the
+  // rest of the daemon. See docs/decisions/2026-08-27-export-import.md.
+  const handleTransferRequest = createTransferRouter({
+    async pickSaveFile() {
+      const defaultName = `antigravity-accounts-${new Date().toISOString().slice(0, 10)}.json`;
+      const uri = await vscode.window.showSaveDialog({
+        defaultUri: vscode.Uri.file(path.join(os.homedir(), defaultName)),
+        filters: { 'Account bundle': ['json'] },
+        saveLabel: 'Export accounts',
+      });
+      return uri?.fsPath;
+    },
+    async pickOpenFile() {
+      const uris = await vscode.window.showOpenDialog({
+        canSelectMany: false,
+        filters: { 'Account bundle': ['json'] },
+        openLabel: 'Import accounts',
+      });
+      return uris?.[0]?.fsPath;
+    },
+  });
+
   log('BOOT', `Daemon activating, log file at ${LOG_FILE}`);
 
   // HTTP Server for Webview bridge
@@ -259,6 +283,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     try {
+      if (url.pathname === '/api/export' || url.pathname === '/api/import') {
+        await handleTransferRequest(url, req, res);
+        return;
+      }
       await handleApiRequest(url, req, res);
     } catch (err: any) {
       respondError(res, 500, err.message);

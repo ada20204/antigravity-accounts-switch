@@ -5,7 +5,7 @@ import { timingSafeEqual } from 'crypto';
 import { spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import { AccountStateError, readJson, withFileLock, writeJson } from './files';
+import { AccountStateError, readJson, withFileLock, writeJson } from './support/files';
 import { accountId } from './identifiers';
 
 const ACTIVE_SERVICE = 'gemini';

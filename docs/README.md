@@ -20,10 +20,12 @@ src/
     extension.ts     activate()/deactivate() 入口 + server 装配(CORS/静态文件/端口分配),不含 /api/* 业务逻辑
     routes.ts        /api/* 路由(除 add-account 系列和 /api/log)
     addAccountRoutes.ts  /api/add-account/* 五个端点,单独一份文件(begin 那条最长)
+    transferRoutes.ts    /api/export、/api/import——vscode-free,文件选择器由 extension.ts 注入
     hubRestart.ts    agy --hub 进程生命周期管理(现在按 workspace folder 过滤,只管本窗口自己的 hub)
     cdpInjector.ts   往 VS Code webview 注入 runtime bundle 的 CDP 循环(同样按本窗口的 hub 端口过滤)
     accounts/        账号管理核心,vendor 自 agent-hub-accounts(不再要求用户单独装它)——见
                      docs/decisions/2026-08-26-vendor-agent-hub-accounts.md
+      support/files.ts   原子写 JSON + 跨进程文件锁,accounts/ 下所有模块共用
     httpUtils.ts     共享的请求体读取/响应/CORS 白名单
     logger.ts        文件日志 + VS Code Output Channel(按 tag 分默认可见/仅 verbose)
   runtime/      注入进 Antigravity webview 的前端代码(浏览器环境,非 Node)

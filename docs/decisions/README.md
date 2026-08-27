@@ -2,6 +2,7 @@
 
 为什么这么做、试过但失败的方案、以及失败的证据——按主题查,不用整份翻。新的在前;标 `(已被取代)`/`(历史)` 的仅供追溯,结论以后出现的同主题条目为准。
 
+- [Export/Import 账号功能接进 UI](./2026-08-27-export-import.md) — `docs/ISSUES.md` 最后一条大项;`transferRoutes.ts` 保持 vscode-free,文件选择器通过依赖注入从 `extension.ts` 传进去;export/import 都不碰 Keychain 活跃槽位,不需要 hub 重启;合成数据测试专门验证了导入进全新注册表后凭证依然能通过 `verifiedOverview()` 校验,不只是核对返回的账号数量。
 - [全新状态下"收编当前已登录账号"的入口](./2026-08-27-adopt-current-login.md) — 只能加在 Settings 卡片(账号弹窗所在的主面板 iframe 读不到原生 Account 面板 DOM);不需要新路由,`/api/connect` 传显式邮箱本来就是"存成这个账号"的语义,纯粹是加一个 UI 按钮复用现成的 `triggerConnect`。
 - [extension.ts 拆分:路由 vs 装配](./2026-08-27-split-extension-ts-routes.md) — `docs/ISSUES.md` 挂了很久的一条,拆成 `extension.ts`(装配,282 行)+ `routes.ts`(348 行)+ `addAccountRoutes.ts`(275 行,add-account 五个端点单独一份),共享可变状态通过一个 `RouteState` 对象引用传递,不会拿到过期快照。
 - [把 agent-hub-accounts 的账号管理核心搬进本仓库,不再要求用户单独装它](./2026-08-26-vendor-agent-hub-accounts.md) — vendor 约 1500 行零依赖代码进 `src/daemon/accounts/`,存储路径实测和真实安装的 CLI 逐字节一致(含对 137 代真实注册表的只读 golden-diff 验证);调用统一走 `manager.ts` 的双重校验层,不直接摸 `keychain.ts` 原始方法;`finish` 端点不再退化到已验证结构性坏掉的猜测逻辑;`extension.ts` 里一份重复实现凭证文件格式的代码顺带删掉。`cliRunner.ts` 整个移除。

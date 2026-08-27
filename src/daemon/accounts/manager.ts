@@ -9,7 +9,7 @@
 // the second guard against the account-misattribution bug class documented in
 // docs/decisions/2026-08-23-never-bare-connect-call.md.
 
-import { AccountStateError } from './files';
+import { AccountStateError } from './support/files';
 import type { KeychainPort } from './keychain';
 import { LiveStore } from './live';
 import { AccountRegistry } from './registry';

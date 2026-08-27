@@ -63,17 +63,26 @@ process.exit(2);
     FAKE_KEYCHAIN_STATE: fakeKeychainState,
   };
 
-  function harness(script) {
+  // Shaped like a real standalone-token envelope ("prefix:base64(JSON with
+  // refresh_token)") — capture()/switchAccount() don't care about this shape
+  // (they just move the string around), but importProfile() validates it via
+  // decodeStandaloneToken(), so export/import needs realistic fixtures, not
+  // an arbitrary string.
+  function fakeSecret(name) {
+    return `token:${Buffer.from(JSON.stringify({ refresh_token: `refresh-${name}` })).toString('base64')}`;
+  }
+
+  function harness(script, extraEnv = {}) {
     const scriptPath = path.join(root, `step-${Date.now()}-${Math.random().toString(36).slice(2)}.cjs`);
     fs.writeFileSync(scriptPath, script);
-    const result = spawnSync(process.execPath, [scriptPath], { encoding: 'utf8', env });
+    const result = spawnSync(process.execPath, [scriptPath], { encoding: 'utf8', env: { ...env, ...extraEnv } });
     assert.equal(result.status, 0, `harness script failed:\n${result.stderr}`);
     return JSON.parse(result.stdout.trim().split('\n').pop());
   }
 
   // 1. Sign in as accountA (write the active secret directly, same as a real
   // `agy login` would) and capture it.
-  fs.writeFileSync(fakeKeychainState, JSON.stringify({ 'gemini\0antigravity': 'secret-for-a' }), { mode: 0o600 });
+  fs.writeFileSync(fakeKeychainState, JSON.stringify({ 'gemini\0antigravity': fakeSecret('a') }), { mode: 0o600 });
   const afterCaptureA = harness(`
     const { accountService } = require(${JSON.stringify(compiledIndex)});
     const result = accountService.capture('a@example.com', 'a@example.com', true);
@@ -90,7 +99,7 @@ process.exit(2);
 
   // 2. Sign in as accountB (different secret) and capture it too — accountA
   // must NOT still be reported active once the Keychain has moved on.
-  fs.writeFileSync(fakeKeychainState, JSON.stringify({ 'gemini\0antigravity': 'secret-for-b' }), { mode: 0o600 });
+  fs.writeFileSync(fakeKeychainState, JSON.stringify({ 'gemini\0antigravity': fakeSecret('b') }), { mode: 0o600 });
   const afterCaptureB = harness(`
     const { accountService } = require(${JSON.stringify(compiledIndex)});
     const result = accountService.capture('b@example.com', 'b@example.com', true);
@@ -143,6 +152,36 @@ process.exit(2);
   `);
   assert.equal(overviewAfterRemove.accounts.find((x) => x.account_id === 'b@example.com'), undefined);
   assert.ok(overviewAfterRemove.accounts.find((x) => x.account_id === 'a@example.com'), 'accountA must survive removing accountB');
+
+  // 5. Export the current state (just accountA) and import it into a
+  // completely separate, empty registry location — proves the bundle
+  // actually carries a working credential rather than just metadata.
+  const bundlePath = path.join(root, 'export-bundle.json');
+  const exportResult = harness(`
+    const { registry, keychain, exportAccounts } = require(${JSON.stringify(compiledIndex)});
+    const result = exportAccounts({ filePath: ${JSON.stringify(bundlePath)}, registry, keychain });
+    console.log(JSON.stringify(result));
+  `);
+  assert.equal(exportResult.accounts, 1);
+  assert.equal(exportResult.credentials, 1);
+  assert.ok(fs.existsSync(bundlePath));
+
+  const home2Env = { AGENT_HUB_HOME: path.join(root, 'hub2') };
+  const importResult = harness(`
+    const { registry, keychain, importAccounts } = require(${JSON.stringify(compiledIndex)});
+    const result = importAccounts({ filePath: ${JSON.stringify(bundlePath)}, registry, keychain });
+    console.log(JSON.stringify(result));
+  `, home2Env);
+  assert.deepEqual(importResult.imported, ['a@example.com']);
+  assert.equal(importResult.credentials, 1);
+
+  const overviewInHome2 = harness(`
+    const { accountService } = require(${JSON.stringify(compiledIndex)});
+    console.log(JSON.stringify(accountService.verifiedOverview('antigravity-cli')));
+  `, home2Env);
+  const aInHome2 = overviewInHome2.accounts.find((x) => x.account_id === 'a@example.com');
+  assert.ok(aInHome2, 'imported account must appear in the fresh registry');
+  assert.equal(aInHome2.is_active, true, 'imported credential must verify as active — proves the bundle carried a real, working secret, not just metadata');
 
   fs.rmSync(root, { recursive: true, force: true });
 });
