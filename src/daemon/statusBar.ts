@@ -85,18 +85,28 @@ export function createStatusBarManager(
 
         const items: AccountQuickPickItem[] = [];
 
+        function fmtPct(pct: number | null | undefined): string {
+          if (pct == null) return '  — ';
+          return `${pct}%`.padStart(4, ' ');
+        }
+
         for (const acc of accounts) {
           const plan = simplifyTier(state.knownPlans[acc.account_id] ?? acc.quota?.user_tier?.name ?? 'Free');
           const quota = parseQuotaOverview(acc.quota);
           const icon = acc.is_active ? '$(check)' : '$(account)';
-          const activeTag = acc.is_active ? '【当前使用中】 ' : '';
-          const gemDesc = `Gemini: W ${quota.geminiWeekly ?? '—'}% · 5h ${quota.gemini5h ?? '—'}%`;
-          const threePDesc = quota.threePWeekly != null ? ` · 3P: W ${quota.threePWeekly}% · 5h ${quota.threeP5h ?? '—'}%` : '';
+
+          const minPctStr = fmtPct(quota.minPercent);
+          const gemStr = fmtPct(quota.gemini5h ?? quota.geminiWeekly);
+          const threePStr = fmtPct(quota.threeP5h ?? quota.threePWeekly);
+          const tierStr = plan.padEnd(5, ' ');
+
+          const tags: string[] = [];
+          if (acc.is_active) tags.push('【当前使用中】');
+          if (acc.quota?.issue) tags.push(`⚠️ ${acc.quota.issue}`);
 
           items.push({
-            label: `${icon} ${acc.account_id}`,
-            description: `${plan} · 剩余 ${quota.minPercent}%`,
-            detail: `${activeTag}${gemDesc}${threePDesc}${acc.quota?.issue ? ' · ' + acc.quota.issue : ''}`,
+            label: `${icon} 剩余 ${minPctStr} │ Gemini: ${gemStr} │ Claude: ${threePStr} │ ${tierStr} │ ${acc.account_id}`,
+            description: tags.join(' '),
             accountId: acc.account_id,
           });
         }
@@ -108,17 +118,17 @@ export function createStatusBarManager(
         });
         items.push({
           label: '$(add) 添加新 Google 账号...',
-          detail: '打开交互终端执行 Google OAuth 登录流程',
+          description: '打开交互终端执行 Google OAuth 登录流程',
           action: 'add',
         });
         items.push({
           label: '$(sync) 刷新全部账号配额',
-          detail: '从缓存中重新读取并刷新所有已保存账号的配额状态',
+          description: '从缓存中重新读取并刷新所有已保存账号的配额状态',
           action: 'refresh',
         });
         items.push({
           label: '$(output) 打开运行日志',
-          detail: '查看插件运行日志及详细调试输出',
+          description: '查看插件运行日志及详细调试输出',
           action: 'show_logs',
         });
 
