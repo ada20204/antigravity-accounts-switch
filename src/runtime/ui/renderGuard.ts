@@ -72,6 +72,18 @@ window.addEventListener('mouseup', () => {
   pointerDown = false;
   setTimeout(flushPending, 0);
 }, true);
+// mouseup may never fire if the user drags outside the viewport, switches
+// tabs, or triggers a native drag — any of which leaves pointerDown stuck
+// true and all deferred renders permanently suspended. blur covers tab/
+// window switches; pointercancel covers native-drag and touch interrupts.
+window.addEventListener('blur', () => {
+  pointerDown = false;
+  setTimeout(flushPending, 0);
+}, true);
+window.addEventListener('pointercancel', () => {
+  pointerDown = false;
+  setTimeout(flushPending, 0);
+}, true);
 
 function flushPending(): void {
   // A new gesture can start before this timeout fires (two clicks landing in
@@ -100,3 +112,19 @@ export function renderOrDefer(key: HTMLElement, fn: () => void): void {
     fn();
   }
 }
+
+/**
+ * 包装异步点击操作：提供临时的半透明遮罩与指针防重复点击保护，操作结束后自动恢复。
+ */
+export async function withActionPending<T>(element: HTMLElement, action: () => Promise<T>): Promise<T> {
+  const originalOpacity = element.style.opacity;
+  element.style.opacity = '0.5';
+  element.style.pointerEvents = 'none';
+  try {
+    return await action();
+  } finally {
+    element.style.opacity = originalOpacity;
+    element.style.pointerEvents = '';
+  }
+}
+

@@ -2,6 +2,30 @@ import { ProfileSyncAdapter } from '../adapters/profileSyncAdapter';
 import { showConfirm, showAlert } from '../ui/confirmDialog';
 import { showProgress } from '../ui/progressOverlay';
 
+/** Schema returned by GET /api/accounts — mirrors agent-hub-accounts overview v3 */
+interface DaemonQuotaBucket {
+  id: string;
+  remaining_fraction: number;
+}
+interface DaemonQuotaGroup {
+  name: string;
+  buckets: DaemonQuotaBucket[];
+}
+interface DaemonAccountEntry {
+  account_id: string;
+  is_active: boolean;
+  plan?: string;
+  credential_drift?: boolean;
+  quota?: {
+    issue?: string | null;
+    user_tier?: { name: string };
+    groups?: DaemonQuotaGroup[];
+  };
+}
+interface DaemonAccountsResponse {
+  accounts: DaemonAccountEntry[];
+}
+
 // agent-hub-accounts schema v3: `quota.groups` is an array of named groups
 // (e.g. "Gemini Models", "Claude and GPT models"), each with a `buckets`
 // array carrying a stable `id` per window (e.g. "gemini-weekly", "gemini-5h")
@@ -9,9 +33,9 @@ import { showProgress } from '../ui/progressOverlay';
 // be absent entirely for a given account (seen live: free-tier accounts have
 // no "gemini-5h" bucket at all), so this returns null rather than 0 for "not
 // present", same as the old optional-chained lookup it replaces.
-function findQuotaBucket(groups: any[] | undefined, bucketId: string): number | null {
+function findQuotaBucket(groups: DaemonQuotaGroup[] | undefined, bucketId: string): number | null {
   for (const group of groups ?? []) {
-    const bucket = group.buckets?.find((b: any) => b.id === bucketId);
+    const bucket = group.buckets?.find(b => b.id === bucketId);
     if (bucket?.remaining_fraction != null) return bucket.remaining_fraction;
   }
   return null;
@@ -31,17 +55,27 @@ export interface SubscriptionAccount {
   isActive: boolean;
   tokenMask: string;
   issue?: string | null;
-  geminiWeekly?: number;
-  gemini5h?: number;
+  geminiWeekly?: number | null;
+  gemini5h?: number | null;
+  threePWeekly?: number | null;
+  threeP5h?: number | null;
 }
 
 export class AccountStore {
   private static STORAGE_KEY = 'ag_enhancer_accounts';
+  private static CURRENT_LOGIN_KEY = 'ag_enhancer_current_login';
+  private static CURRENT_LOGIN_AT_KEY = 'ag_enhancer_current_login_at';
+  private static CURRENT_LOGIN_TTL_MS = 60_000;
+  private static isSwitching = false;
 
   // Per-window port, set by cdpInjector.ts before this bundle runs — see
   // docs/decisions/2026-08-26-daemon-port-was-hardcoded.md.
   private static get DAEMON_URL(): string {
     return `http://127.0.0.1:${(window as any).__AG_DAEMON_PORT__ ?? 63820}`;
+  }
+
+  private static get DAEMON_HEADERS(): Record<string, string> {
+    return { 'X-AG-Daemon-Token': String((window as any).__AG_DAEMON_TOKEN__ ?? '') };
   }
 
   // Fire-and-forget: ships logs to the daemon's log file (webview devtools
@@ -50,7 +84,7 @@ export class AccountStore {
     try {
       fetch(`${this.DAEMON_URL}/api/log`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...this.DAEMON_HEADERS },
         body: JSON.stringify({ level: 'info', message, data })
       }).catch(() => {});
     } catch {
@@ -65,47 +99,76 @@ export class AccountStore {
     this.remoteLog('runtime booted, fetching accounts', { pageOrigin: window.location.origin });
   }
 
-  public static async fetchLiveAccounts(): Promise<SubscriptionAccount[]> {
+  // Unified authenticated JSON request helper to eliminate duplicate fetch boilerplate.
+  private static async request<T = any>(
+    endpoint: string,
+    options?: { method?: 'GET' | 'POST'; headers?: Record<string, string>; body?: unknown }
+  ): Promise<{ ok: boolean; status: number; data?: T; error?: string }> {
+    const method = options?.method ?? (options?.body !== undefined ? 'POST' : 'GET');
+    const headers: Record<string, string> = { ...this.DAEMON_HEADERS, ...options?.headers };
+    let reqBody: string | undefined;
+    if (options?.body !== undefined) {
+      headers['Content-Type'] = 'application/json';
+      reqBody = JSON.stringify(options.body);
+    }
     try {
-      const res = await fetch(`${this.DAEMON_URL}/api/accounts`);
-      if (res.ok) {
-        const data = await res.json();
-        const colors = ['#688e57', '#3b58cc', '#b5a999', '#a6334f', '#2e8b57', '#f6b26b'];
-        const accounts: SubscriptionAccount[] = (data.accounts || []).map((acc: any, idx: number) => {
-          // Schema v3 — see docs/decisions/2026-08-25-route-schema-break.md.
-          const gemWeeklyFraction = findQuotaBucket(acc.quota?.groups, 'gemini-weekly');
-          const gem5hFraction = findQuotaBucket(acc.quota?.groups, 'gemini-5h');
-          const gemWeekly = gemWeeklyFraction != null ? Math.round(gemWeeklyFraction * 100) : null;
-          const gem5h = gem5hFraction != null ? Math.round(gem5hFraction * 100) : null;
-          // min(), not five-hour alone — see docs/decisions/2026-08-23-multi-account-quota-display.md.
-          const known = [gem5h, gemWeekly].filter((v): v is number => v != null);
-          const issue = acc.quota?.issue ?? null;
-          const quota = known.length > 0 ? Math.min(...known) : (issue ? 0 : 100);
-
-          return {
-            id: acc.account_id,
-            name: acc.account_id.split('@')[0],
-            plan: acc.plan ?? 'Unknown',
-            quotaPercent: quota,
-            color: colors[idx % colors.length],
-            isActive: Boolean(acc.is_active),
-            tokenMask: '••••••••',
-            issue: issue ?? (acc.credential_drift ? 'credential_drift' : null),
-            geminiWeekly: gemWeekly || 0,
-            gemini5h: gem5h || 0
-          };
-        });
-
-        if (accounts.length > 0) {
-          this.saveAccounts(accounts);
-          const active = accounts.find(a => a.isActive);
-          if (active) ProfileSyncAdapter.syncBottomTrigger(active);
-          window.dispatchEvent(new CustomEvent('ag-account-changed', { detail: { source: 'fetch' } }));
-          return accounts;
-        }
+      const res = await fetch(`${this.DAEMON_URL}${endpoint}`, { method, headers, body: reqBody });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        return { ok: false, status: res.status, error: data?.error || `Daemon returned ${res.status}` };
       }
-    } catch (e) {
-      console.warn('[AccountStore] Daemon unavailable, falling back to cache:', e);
+      return { ok: true, status: res.status, data };
+    } catch (e: any) {
+      this.remoteLog(`${endpoint} FAILED`, { errorName: e?.name, errorMessage: e?.message });
+      return { ok: false, status: 0, error: e?.message || 'Could not reach the local accounts daemon.' };
+    }
+  }
+
+  public static async fetchLiveAccounts(): Promise<SubscriptionAccount[]> {
+    const res = await this.request<DaemonAccountsResponse>('/api/accounts');
+    if (res.ok && res.data) {
+      const data = res.data;
+      const colors = ['#688e57', '#3b58cc', '#b5a999', '#a6334f', '#2e8b57', '#f6b26b'];
+      const accounts: SubscriptionAccount[] = (data.accounts ?? []).map((acc, idx) => {
+        const gemWeeklyFraction = findQuotaBucket(acc.quota?.groups, 'gemini-weekly');
+        const gem5hFraction = findQuotaBucket(acc.quota?.groups, 'gemini-5h');
+        const threePWeeklyFraction = findQuotaBucket(acc.quota?.groups, '3p-weekly');
+        const threeP5hFraction = findQuotaBucket(acc.quota?.groups, '3p-5h');
+
+        const gemWeekly = gemWeeklyFraction != null ? Math.round(gemWeeklyFraction * 100) : null;
+        const gem5h = gem5hFraction != null ? Math.round(gem5hFraction * 100) : null;
+        const threePWeekly = threePWeeklyFraction != null ? Math.round(threePWeeklyFraction * 100) : null;
+        const threeP5h = threeP5hFraction != null ? Math.round(threeP5hFraction * 100) : null;
+
+        const known = [gem5h, gemWeekly, threeP5h, threePWeekly].filter((v): v is number => v != null);
+        const issue = acc.quota?.issue ?? null;
+        const quota = known.length > 0 ? Math.min(...known) : (issue ? 0 : 100);
+
+        return {
+          id: acc.account_id,
+          name: acc.account_id.split('@')[0],
+          plan: acc.plan ?? 'Unknown',
+          quotaPercent: quota,
+          color: colors[idx % colors.length],
+          isActive: Boolean(acc.is_active),
+          tokenMask: '••••••••',
+          issue: issue ?? (acc.credential_drift ? 'credential_drift' : null),
+          geminiWeekly: gemWeekly,
+          gemini5h: gem5h,
+          threePWeekly: threePWeekly,
+          threeP5h: threeP5h,
+        };
+      });
+
+      if (accounts.length > 0) {
+        this.saveAccounts(accounts);
+        const active = accounts.find(a => a.isActive);
+        if (active) ProfileSyncAdapter.syncBottomTrigger(active);
+        window.dispatchEvent(new CustomEvent('ag-account-changed', { detail: { source: 'fetch' } }));
+        return accounts;
+      }
+    } else {
+      console.warn('[AccountStore] Daemon unavailable, falling back to cache:', res.error);
     }
     return this.getAccounts();
   }
@@ -122,6 +185,20 @@ export class AccountStore {
       try { return JSON.parse(raw); } catch (e) {}
     }
     return [];
+  }
+
+  public static rememberCurrentLogin(email: string | null): void {
+    if (!email || localStorage.getItem(this.CURRENT_LOGIN_KEY) === email) return;
+    localStorage.setItem(this.CURRENT_LOGIN_KEY, email);
+    localStorage.setItem(this.CURRENT_LOGIN_AT_KEY, String(Date.now()));
+    window.dispatchEvent(new CustomEvent('ag-account-changed', { detail: { source: 'identity' } }));
+  }
+
+  public static getRememberedCurrentLogin(): string | null {
+    const email = localStorage.getItem(this.CURRENT_LOGIN_KEY)?.trim() ?? '';
+    const observedAt = Number(localStorage.getItem(this.CURRENT_LOGIN_AT_KEY));
+    if (!email || !Number.isFinite(observedAt) || Date.now() - observedAt > this.CURRENT_LOGIN_TTL_MS) return null;
+    return email;
   }
 
   public static saveAccounts(accounts: SubscriptionAccount[]): void {
@@ -147,6 +224,20 @@ export class AccountStore {
   }
 
   public static async switchAccount(id: string): Promise<boolean> {
+    if (this.isSwitching) {
+      console.warn('[AccountStore] Switch already in progress, ignoring concurrent request');
+      this.remoteLog('switchAccount BLOCKED: concurrent switch in progress', { id });
+      return false;
+    }
+    this.isSwitching = true;
+    try {
+      return await this.doSwitch(id);
+    } finally {
+      this.isSwitching = false;
+    }
+  }
+
+  private static async doSwitch(id: string): Promise<boolean> {
     console.log('[AccountStore] Seamlessly switching account to:', id);
     this.remoteLog('switchAccount called', { id, pageOrigin: window.location.origin });
 
@@ -169,49 +260,45 @@ export class AccountStore {
     window.dispatchEvent(new CustomEvent('ag-account-changed', { detail: { activeId: id } }));
 
     // 2. 调用 Daemon 写入 Keychain；失败必须回滚，否则 UI 会显示已切换到一个实际上后端没切过去的账号
-    try {
-      const res = await fetch(`${this.DAEMON_URL}/api/switch`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accountId: id })
-      });
-      if (!res.ok) {
-        throw new Error(`Daemon returned ${res.status}`);
-      }
+    const res = await this.request('/api/switch', { body: { accountId: id } });
+    if (res.ok) {
       console.log('[AccountStore] Keychain slot updated successfully');
       this.remoteLog('switchAccount daemon call succeeded', { id });
       await this.fetchLiveAccounts(); // re-read real state, don't trust the optimistic flip
       return true;
-    } catch (e: any) {
-      // CORS block and network error both surface as generic "Failed to
-      // fetch" (browser hides the real reason) — the daemon's REQ log (or
-      // its absence) is what actually tells them apart.
-      console.error('[AccountStore] Daemon switch call failed, rolling back:', e);
-      this.remoteLog('switchAccount daemon call FAILED, rolling back', {
-        id,
-        errorName: e?.name,
-        errorMessage: e?.message,
-        daemonUrl: this.DAEMON_URL,
-        pageOrigin: window.location.origin
-      });
-      this.saveAccounts(previousAccounts);
-      if (previousActive) {
-        ProfileSyncAdapter.syncBottomTrigger(previousActive);
-      }
-      window.dispatchEvent(new CustomEvent('ag-account-changed', { detail: { activeId: previousActive?.id, error: true } }));
-      return false;
     }
+
+    console.error('[AccountStore] Daemon switch call failed, rolling back:', res.error);
+    this.remoteLog('switchAccount daemon call FAILED, rolling back', {
+      id,
+      error: res.error,
+      daemonUrl: this.DAEMON_URL,
+      pageOrigin: window.location.origin
+    });
+    this.saveAccounts(previousAccounts);
+    if (previousActive) {
+      ProfileSyncAdapter.syncBottomTrigger(previousActive);
+    }
+    window.dispatchEvent(new CustomEvent('ag-account-changed', { detail: { activeId: previousActive?.id, error: true } }));
+    return false;
   }
 
   // Shared by every UI entry point so confirmation wording can't drift between
   // them. Does not skip on cached isActive — see docs/decisions/account-switch-semantics.md.
   public static async confirmAndSwitch(id: string): Promise<boolean> {
-    const proceed = await showConfirm('Switching accounts restarts the Antigravity connection and interrupts any in-progress response. Continue?');
+    const proceed = await showConfirm(
+      `即将切换至账号：\n${id}\n\n切换账号将重新连接 Antigravity 并中断进行中的生成任务。是否确认切换？`,
+      {
+        title: '切换账号确认',
+        okText: '确认切换',
+        cancelText: '取消',
+      }
+    );
     if (!proceed) return false;
 
     const progress = showProgress(
-      `Switching to ${id}…`,
-      'Antigravity will reload automatically once the new account is live. This takes a few seconds.'
+      `正在切换到 ${id}…`,
+      'Antigravity 正在应用新账号凭据并重新连接，请稍候几秒…'
     );
     let ok = false;
     try {
@@ -224,7 +311,7 @@ export class AccountStore {
       if (!ok) progress.close();
     }
     if (!ok) {
-      await showAlert('Could not switch accounts. Your previous account is still active — see the daemon log for details.');
+      await showAlert('切换账号失败，当前仍保持原有账号登录状态。详情请查看 daemon 日志。', { title: '切换失败', okText: '我知道了' });
     }
     return ok;
   }
@@ -234,18 +321,7 @@ export class AccountStore {
   // the follow-up capture both happen in that window, so there's nothing left
   // to drive from here afterwards except a refresh.
   public static async triggerLogin(): Promise<{ ok: boolean; error?: string }> {
-    try {
-      const res = await fetch(`${this.DAEMON_URL}/api/login`, { method: 'POST' });
-      if (!res.ok) {
-        const detail = await res.json().catch(() => ({}));
-        return { ok: false, error: detail.error || `Daemon returned ${res.status}` };
-      }
-      return { ok: true };
-    } catch (e: any) {
-      console.error('[AccountStore] Login trigger failed:', e);
-      this.remoteLog('triggerLogin FAILED', { errorName: e?.name, errorMessage: e?.message });
-      return { ok: false, error: e?.message || 'Could not reach the local accounts daemon.' };
-    }
+    return this.postJson('/api/login');
   }
 
   // --- Browser-based add-account (see docs/decisions/2026-08-23-add-account-native-browser-final.md) ---
@@ -265,30 +341,18 @@ export class AccountStore {
   }
 
   public static async getAddAccountStatus(): Promise<{ pending: boolean; backupAccountId?: string; justAdded?: string | null; signedOut?: boolean }> {
-    try {
-      const res = await fetch(`${this.DAEMON_URL}/api/add-account/status`);
-      if (!res.ok) return { pending: false };
-      return await res.json();
-    } catch {
-      return { pending: false };
-    }
+    const res = await this.request<{ pending: boolean; backupAccountId?: string; justAdded?: string | null; signedOut?: boolean }>('/api/add-account/status');
+    return res.ok && res.data ? res.data : { pending: false };
   }
 
-  private static async postJson(path: string, body?: unknown): Promise<any> {
-    try {
-      const res = await fetch(`${this.DAEMON_URL}${path}`, {
-        method: 'POST',
-        ...(body !== undefined
-          ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
-          : {}),
-      });
-      const parsed = await res.json().catch(() => ({}));
-      if (!res.ok) return { ok: false, error: parsed.error || `Daemon returned ${res.status}` };
-      return parsed;
-    } catch (e: any) {
-      this.remoteLog(`${path} FAILED`, { errorName: e?.name, errorMessage: e?.message });
-      return { ok: false, error: e?.message || 'Could not reach the local accounts daemon.' };
-    }
+  private static async postJson<T = any>(path: string, body?: unknown): Promise<{ ok: boolean; error?: string } & any> {
+    const res = await this.request<T>(path, {
+      method: 'POST',
+      headers: { ...this.DAEMON_HEADERS },
+      body,
+    });
+    if (!res.ok) return { ok: false, error: res.error };
+    return typeof res.data === 'object' && res.data !== null ? { ok: true, ...res.data } : { ok: true };
   }
 
   // Reports who the Account panel DOM shows as signed in — see
@@ -320,47 +384,23 @@ export class AccountStore {
   }
 
   public static async triggerConnect(accountId?: string): Promise<{ ok: boolean; error?: string }> {
-    try {
-      const res = await fetch(`${this.DAEMON_URL}/api/connect`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accountId })
-      });
-      if (!res.ok) {
-        const detail = await res.json().catch(() => ({}));
-        return { ok: false, error: detail.error || `Daemon returned ${res.status}` };
-      }
-      await this.fetchLiveAccounts();
-      return { ok: true };
-    } catch (e: any) {
-      console.error('[AccountStore] Connect trigger failed:', e);
-      return { ok: false, error: e?.message || 'Could not reach the local accounts daemon.' };
-    }
+    const res = await this.postJson('/api/connect', { accountId });
+    if (res.ok) await this.fetchLiveAccounts();
+    return res;
   }
 
   // Returns the failure reason instead of swallowing it — the daemon refuses to
   // remove the signed-in account (409 ACCOUNT_ACTIVE), and silently doing
   // nothing would look identical to a successful removal in the UI.
   public static async removeAccount(id: string): Promise<{ ok: boolean; error?: string }> {
-    try {
-      const res = await fetch(`${this.DAEMON_URL}/api/remove`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accountId: id })
-      });
-      if (!res.ok) {
-        const detail = await res.json().catch(() => ({}));
-        this.remoteLog('removeAccount refused', { id, status: res.status, error: detail.error });
-        return { ok: false, error: detail.error || `Daemon returned ${res.status}` };
-      }
-      this.remoteLog('removeAccount succeeded', { id });
-      await this.fetchLiveAccounts();
-      return { ok: true };
-    } catch (e: any) {
-      console.error('[AccountStore] Remove trigger failed:', e);
-      this.remoteLog('removeAccount FAILED', { id, errorName: e?.name, errorMessage: e?.message });
-      return { ok: false, error: e?.message || 'Could not reach the local accounts daemon.' };
+    const res = await this.postJson('/api/remove', { accountId: id });
+    if (!res.ok) {
+      this.remoteLog('removeAccount refused', { id, error: res.error });
+      return res;
     }
+    this.remoteLog('removeAccount succeeded', { id });
+    await this.fetchLiveAccounts();
+    return res;
   }
 
   // The file picker (native VS Code save dialog) runs entirely on the daemon
@@ -378,11 +418,7 @@ export class AccountStore {
   }
 
   public static async refreshAllQuotas(): Promise<void> {
-    try {
-      await fetch(`${this.DAEMON_URL}/api/quota-refresh`, { method: 'POST' });
-      await this.fetchLiveAccounts();
-    } catch (e) {
-      console.error('[AccountStore] Quota refresh failed:', e);
-    }
+    await this.request('/api/quota-refresh', { method: 'POST' });
+    await this.fetchLiveAccounts();
   }
 }

@@ -136,18 +136,21 @@ window.addEventListener('resize', () => {
 // re-run whenever the native DOM they anchor to might have changed (the
 // badge's profile trigger, the Settings card's anchor section) — a DOM
 // mutation is exactly the signal for that, and reacts within a frame instead
-// of waiting up to a fixed interval. rAF-coalesces a burst of mutation
-// records (e.g. streaming chat text updating every few ms) into one check
-// per frame rather than running once per record.
-let mutationCheckScheduled = false;
+// of waiting up to a fixed interval. Debounced at 300ms rather than rAF
+// (which fires up to 60×/s): the profile badge and settings enhancements
+// don't need frame-level responsiveness, and rAF during LLM streaming —
+// where childList mutations fire every few ms — made the full-document
+// querySelectorAll scans in SemanticLocator run ~60×/s, blocking the main
+// thread. 300ms keeps the UI visually responsive (well under the ~1s human
+// perception threshold for layout shifts) while cutting scan frequency ~20×.
+let mutationDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 function scheduleMutationCheck(): void {
-  if (mutationCheckScheduled) return;
-  mutationCheckScheduled = true;
-  requestAnimationFrame(() => {
-    mutationCheckScheduled = false;
+  if (mutationDebounceTimer !== null) return;
+  mutationDebounceTimer = setTimeout(() => {
+    mutationDebounceTimer = null;
     ensureProfileBadge();
     injectSettingsEnhancements();
-  });
+  }, 300);
 }
 new MutationObserver(scheduleMutationCheck).observe(document.body, { childList: true, subtree: true });
 

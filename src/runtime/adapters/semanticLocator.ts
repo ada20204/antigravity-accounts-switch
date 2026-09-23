@@ -86,10 +86,19 @@ export class SemanticLocator {
    * 我们自己的环用的是 class="ag-quota-ring"、不带 data-testid，所以不会自我干扰。
    */
   public static findQuotaSectionContainer(): HTMLElement | null {
-    const rings = Array.from(
+    const allRings = Array.from(
       document.querySelectorAll<HTMLElement>('[data-testid="quota-progress-circle"]')
-    );
-    if (rings.length === 0) return null;
+    ).filter(el => el.isConnected && (el.offsetParent !== null || el.getClientRects().length > 0));
+    if (allRings.length === 0) return null;
+
+    // If rings exist in an active foreground popover/dialog, scope to that container
+    const popoverRing = allRings.find(el => el.closest('[role="dialog"], [role="menu"], [class*="popover"], [class*="flyout"], [class*="dropdown"], [class*="quick-input"]'));
+    const rings = popoverRing
+      ? allRings.filter(el => {
+          const pop = el.closest('[role="dialog"], [role="menu"], [class*="popover"], [class*="flyout"], [class*="dropdown"], [class*="quick-input"]');
+          return pop === popoverRing.closest('[role="dialog"], [role="menu"], [class*="popover"], [class*="flyout"], [class*="dropdown"], [class*="quick-input"]');
+        })
+      : allRings;
 
     // Starts from the PARENT of the first ring, not the ring itself.
     // Node.contains() is true for a node containing itself, so with exactly
@@ -101,8 +110,11 @@ export class SemanticLocator {
     // guarantees the returned element is never one of the rings themselves,
     // for both the one-ring and multi-ring case.
     let ancestor: HTMLElement | null = rings[0].parentElement;
-    while (ancestor && !rings.every(ring => ancestor!.contains(ring))) {
+    while (ancestor && ancestor !== document.body && !rings.every(ring => ancestor!.contains(ring))) {
       ancestor = ancestor.parentElement;
+    }
+    if (!ancestor || ancestor === document.body || ancestor === document.documentElement) {
+      return null;
     }
     return ancestor;
   }
@@ -116,31 +128,42 @@ export class SemanticLocator {
    * Settings 页(`settings-standalone`)存在。用 "Sign Out" 上下文匹配,天然
    * 排除我们自己弹窗里 "Switch"/"In Use" 语境的邮箱行。
    */
-  public static findAccountPanelEmail(): string | null {
+  /**
+   * 单次 DOM 遍历合并提取 Settings 页的邮箱与 Plan 标签，消除连续全量 querySelectorAll 的重复开销
+   */
+  public static scanSettingsMetadata(): { email: string | null; plan: string | null } {
+    const PREFIX = 'Your Plan:';
+    let foundEmail: string | null = null;
+    let foundPlan: string | null = null;
+
     const leaves = Array.from(document.querySelectorAll<HTMLElement>('div, span, p'));
-    const emailLeaf = leaves.find(el => {
-      if (leafEmailText(el) === null) return false;
-      const context = el.parentElement?.parentElement?.innerText ?? '';
-      return /Sign Out/i.test(context);
-    });
-    return emailLeaf ? leafEmailText(emailLeaf) : null;
+    for (const el of leaves) {
+      if (!foundEmail) {
+        const text = leafEmailText(el);
+        if (text !== null) {
+          const context = el.parentElement?.parentElement?.innerText ?? '';
+          if (/Sign Out/i.test(context)) {
+            foundEmail = text;
+          }
+        }
+      }
+      if (!foundPlan && isLeafTextNode(el)) {
+        const content = el.textContent?.trim() ?? '';
+        if (content.startsWith(PREFIX)) {
+          foundPlan = content.slice(PREFIX.length).trim() || null;
+        }
+      }
+      if (foundEmail && foundPlan) break;
+    }
+    return { email: foundEmail, plan: foundPlan };
   }
 
-  /**
-   * 原生 Settings → General → Account 卡片里的 "Your Plan: <label>" 行——这是
-   * 判断账号等级(Free/Pro/Ultra)唯一的真实来源。`route --json` 的 schema 里
-   * 没有 plan/tier/subscription 字段(现场核实过),而这行文字只在 Settings
-   * 的 General 子页存在,且只反映"当前激活账号"的等级——不是每个已保存账号
-   * 都能同时读到,调用方需要按账号 id 自行持久化。见
-   * docs/decisions/2026-08-23-account-plan-tier.md。
-   */
+  public static findAccountPanelEmail(): string | null {
+    return this.scanSettingsMetadata().email;
+  }
+
   public static findAccountPlanLabel(): string | null {
-    const PREFIX = 'Your Plan:';
-    const leaves = Array.from(document.querySelectorAll<HTMLElement>('div, span, p'));
-    const node = leaves.find(el => isLeafTextNode(el) && (el.textContent?.trim().startsWith(PREFIX) ?? false));
-    if (!node) return null;
-    const label = node.textContent!.trim().slice(PREFIX.length).trim();
-    return label || null;
+    return this.scanSettingsMetadata().plan;
   }
 
   private static isElementVisible(el: HTMLElement): boolean {

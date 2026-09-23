@@ -4,6 +4,7 @@
 
 import { AccountStore } from '../services/accountStore';
 import { SemanticLocator } from '../adapters/semanticLocator';
+import { escapeHtml } from '../adapters/domUtils';
 import { showAlert } from './confirmDialog';
 import { showProgress } from './progressOverlay';
 
@@ -38,7 +39,7 @@ export async function syncAddAccountPrompt(): Promise<number> {
     // landed, and pull the list so it shows up without waiting for its own poll.
     if (status.justAdded) {
       await AccountStore.fetchLiveAccounts();
-      await showAlert(`Added ${status.justAdded}. It is now your active account.`);
+      await showAlert(`Added ${escapeHtml(status.justAdded)}. It is now your active account.`);
     }
     syncRescueBanner(status.signedOut === true);
     return status.signedOut ? ACTIVE_POLL_MS : IDLE_POLL_MS;
@@ -58,7 +59,7 @@ export async function syncAddAccountPrompt(): Promise<number> {
       <div class="ag-add-banner-title">Adding an account</div>
       <div class="ag-add-banner-detail">
         Sign in with the new Google account — it will be added automatically.
-        Cancel restores ${status.backupAccountId ?? 'your previous account'}.
+        Cancel restores ${escapeHtml(status.backupAccountId) || 'your previous account'}.
       </div>
     </div>
     <div class="ag-add-banner-actions">

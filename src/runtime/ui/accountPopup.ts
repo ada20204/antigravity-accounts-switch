@@ -1,8 +1,8 @@
 import { AccountStore } from '../services/accountStore';
 import { showConfirm, showAlert } from './confirmDialog';
 import { showProgress } from './progressOverlay';
-import { bindUntilRemoved, unbind, shouldSkipRender, renderOrDefer } from './renderGuard';
-import { escapeHtml } from '../adapters/domUtils';
+import { bindUntilRemoved, unbind, shouldSkipRender, renderOrDefer, withActionPending } from './renderGuard';
+import { escapeHtml, simplifyTier } from '../adapters/domUtils';
 
 // Deterministic initial, not a stock photo — see docs/decisions/profile-trigger-sync-not-coordinate.md, "头像".
 function initial(name: string): string {
@@ -37,6 +37,10 @@ function renderPopupContent(container: HTMLElement) {
   const accounts = AccountStore.getAccounts();
   const { bestPercent, count } = AccountStore.getTotalQuota();
   const activeAccount = accounts.find(a => a.isActive) || accounts[0];
+  // The native Account panel exists only in the settings iframe. The main
+  // account-menu iframe cannot inspect it, so settingsEnhancer records the
+  // observed identity in same-origin storage for this popup to consume.
+  const currentLoginEmail = accounts.length === 0 ? AccountStore.getRememberedCurrentLogin() : null;
 
   // The background poll fires ag-account-changed every 20s whether anything
   // moved or not. Rewriting innerHTML then would throw away the account list's
@@ -44,7 +48,8 @@ function renderPopupContent(container: HTMLElement) {
   const signature = JSON.stringify([
     bestPercent,
     count,
-    accounts.map(a => [a.id, a.name, a.plan, a.quotaPercent, a.isActive, a.issue ?? '', a.tokenMask]),
+    currentLoginEmail,
+    accounts.map(a => [a.id, a.name, a.plan, a.quotaPercent, a.isActive, a.issue ?? '', a.geminiWeekly ?? '', a.gemini5h ?? '', a.threePWeekly ?? '', a.threeP5h ?? '', a.tokenMask]),
   ]);
   if (shouldSkipRender(container, signature)) return;
 
@@ -71,17 +76,27 @@ function renderPopupContent(container: HTMLElement) {
     <div class="ag-switch-subs-list">
       ${accounts.length === 0 ? `
         <div class="ag-switch-empty">
-          No accounts connected yet. If Antigravity is already signed in, open
-          Settings → General for a one-click "Use current login" option —
-          otherwise use "Add new account" below, which signs you out first.
+          No accounts connected yet.
+          ${currentLoginEmail ? `
+            <div style="margin-top:10px;">
+              <button class="ag-switch-action-btn" id="ag-adopt-current-login">Use current login (${escapeHtml(currentLoginEmail)})</button>
+            </div>
+          ` : 'Use “Add new account” below to connect one.'}
         </div>
       ` : ''}
-      ${accounts.map(acc => `
-        <div class="ag-switch-sub-item ${acc.isActive ? 'active' : ''}" data-account-id="${escapeHtml(acc.id)}">
+      ${accounts.map(acc => {
+        const tier = simplifyTier(acc.plan);
+        const tierClass = `tier-${tier.toLowerCase()}`;
+        const tooltip = `Gemini: 5h ${acc.gemini5h != null ? acc.gemini5h + '%' : '—'} · 周 ${acc.geminiWeekly != null ? acc.geminiWeekly + '%' : '—'}\nClaude/GPT: 5h ${acc.threeP5h != null ? acc.threeP5h + '%' : '—'} · 周 ${acc.threePWeekly != null ? acc.threePWeekly + '%' : '—'}`;
+        return `
+        <div class="ag-switch-sub-item ${acc.isActive ? 'active' : ''}" data-account-id="${escapeHtml(acc.id)}" title="${escapeHtml(tooltip)}">
           <div class="ag-switch-sub-left">
             <div class="ag-dot ag-dot-avatar" style="background-color: ${acc.color};">${initial(acc.name)}</div>
             <div class="ag-switch-sub-info">
-              <div class="ag-switch-sub-name">${escapeHtml(acc.name)} · ${escapeHtml(acc.plan)}</div>
+              <div class="ag-switch-sub-name">
+                <span class="ag-name-text">${escapeHtml(acc.name)}</span>
+                <span class="ag-tier-badge ${tierClass}">${escapeHtml(tier)}</span>
+              </div>
               <div class="ag-switch-sub-dots">${acc.issue ? `<span style="color:#ef4444;font-size:10px;">${escapeHtml(acc.issue)}</span>` : acc.tokenMask}</div>
             </div>
           </div>
@@ -89,7 +104,8 @@ function renderPopupContent(container: HTMLElement) {
             ${acc.issue ? '0%' : `${acc.quotaPercent}%`}
           </div>
         </div>
-      `).join('')}
+      `;
+      }).join('')}
     </div>
 
     <div class="ag-switch-actions">
@@ -107,10 +123,10 @@ function renderPopupContent(container: HTMLElement) {
       const id = el.dataset.accountId;
       console.log('[accountPopup] sub-item clicked, accountId =', id);
       if (id) {
-        el.style.opacity = '0.5';
-        const ok = await AccountStore.confirmAndSwitch(id);
-        el.style.opacity = '';
-        console.log('[accountPopup] switchAccount resolved:', ok);
+        await withActionPending(el, async () => {
+          const ok = await AccountStore.confirmAndSwitch(id);
+          console.log('[accountPopup] switchAccount resolved:', ok);
+        });
       }
     });
   });
@@ -135,5 +151,20 @@ function renderPopupContent(container: HTMLElement) {
       progress.close();
       await showAlert(`Could not start sign-in: ${started.error}\n\nNothing was changed.`);
     }
+  });
+
+  container.querySelector('#ag-adopt-current-login')?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (!currentLoginEmail) return;
+    const proceed = await showConfirm(
+      `Save ${currentLoginEmail} as a connected account?\n\n` +
+      'This does not sign you out or change anything in Antigravity.'
+    );
+    if (!proceed) return;
+    const btn = container.querySelector('#ag-adopt-current-login') as HTMLElement;
+    if (btn) btn.textContent = 'Saving…';
+    const result = await AccountStore.triggerConnect(currentLoginEmail);
+    if (!result.ok) await showAlert(`Could not save ${currentLoginEmail}: ${result.error}`);
+    renderPopupContent(container);
   });
 }

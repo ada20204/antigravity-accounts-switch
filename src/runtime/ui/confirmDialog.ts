@@ -1,12 +1,26 @@
 // Replaces window.confirm()/alert(), which silently no-op in the VS Code
 // webview sandbox — see docs/decisions/webview-confirm-alert-silent-failure.md.
 
-function buildOverlay(message: string): { overlay: HTMLElement; actions: HTMLElement } {
+export interface ConfirmOptions {
+  title?: string;
+  okText?: string;
+  cancelText?: string;
+  isDanger?: boolean;
+}
+
+function buildOverlay(message: string, title?: string): { overlay: HTMLElement; actions: HTMLElement } {
   const overlay = document.createElement('div');
   overlay.className = 'ag-confirm-overlay';
 
   const box = document.createElement('div');
   box.className = 'ag-confirm-box';
+
+  if (title) {
+    const titleEl = document.createElement('div');
+    titleEl.className = 'ag-confirm-title';
+    titleEl.textContent = title;
+    box.appendChild(titleEl);
+  }
 
   const msg = document.createElement('div');
   msg.className = 'ag-confirm-message';
@@ -22,23 +36,35 @@ function buildOverlay(message: string): { overlay: HTMLElement; actions: HTMLEle
   return { overlay, actions };
 }
 
-export function showConfirm(message: string): Promise<boolean> {
+export function showConfirm(message: string, options?: ConfirmOptions): Promise<boolean> {
   return new Promise(resolve => {
-    const { overlay, actions } = buildOverlay(message);
+    const { overlay, actions } = buildOverlay(message, options?.title);
 
     function close(result: boolean) {
+      document.removeEventListener('keydown', onKey);
       overlay.remove();
       resolve(result);
     }
 
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        close(false);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        close(true);
+      }
+    }
+    document.addEventListener('keydown', onKey);
+
     const cancelBtn = document.createElement('button');
     cancelBtn.className = 'ag-confirm-btn ag-confirm-cancel';
-    cancelBtn.textContent = 'Cancel';
+    cancelBtn.textContent = options?.cancelText || '取消';
     cancelBtn.addEventListener('click', () => close(false));
 
     const okBtn = document.createElement('button');
-    okBtn.className = 'ag-confirm-btn ag-confirm-ok';
-    okBtn.textContent = 'Continue';
+    okBtn.className = `ag-confirm-btn ag-confirm-ok${options?.isDanger ? ' ag-confirm-danger' : ''}`;
+    okBtn.textContent = options?.okText || '确定';
     okBtn.addEventListener('click', () => close(true));
 
     actions.appendChild(cancelBtn);
@@ -51,18 +77,27 @@ export function showConfirm(message: string): Promise<boolean> {
   });
 }
 
-export function showAlert(message: string): Promise<void> {
+export function showAlert(message: string, options?: { title?: string; okText?: string }): Promise<void> {
   return new Promise(resolve => {
-    const { overlay, actions } = buildOverlay(message);
+    const { overlay, actions } = buildOverlay(message, options?.title);
 
     function close() {
+      document.removeEventListener('keydown', onKey);
       overlay.remove();
       resolve();
     }
 
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape' || e.key === 'Enter') {
+        e.preventDefault();
+        close();
+      }
+    }
+    document.addEventListener('keydown', onKey);
+
     const okBtn = document.createElement('button');
     okBtn.className = 'ag-confirm-btn ag-confirm-ok';
-    okBtn.textContent = 'OK';
+    okBtn.textContent = options?.okText || '知道了';
     okBtn.addEventListener('click', close);
 
     actions.appendChild(okBtn);

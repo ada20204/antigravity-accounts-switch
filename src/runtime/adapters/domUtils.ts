@@ -26,3 +26,17 @@ const HTML_ESCAPES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '
 export function escapeHtml(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, (ch) => HTML_ESCAPES[ch]);
 }
+
+/**
+ * Simplifies verbose Antigravity tier descriptions into standard clean badges: Free, Pro, Ultra.
+ */
+export function simplifyTier(tier?: string | null): string {
+  if (!tier || tier === 'Unknown') return 'Free';
+  const t = tier.trim();
+  if (/ultra/i.test(t)) return 'Ultra';
+  if (/pro/i.test(t)) return 'Pro';
+  if (/free|starter/i.test(t)) return 'Free';
+  const clean = t.replace(/^(Antigravity|Google AI)\s+/i, '').trim();
+  return clean || 'Free';
+}
+
