@@ -4,10 +4,10 @@
 
 import { spawnSync } from 'child_process';
 import { AccountStateError } from './support/files';
-import type { KeychainPort } from './keychain';
+import type { CredentialPort } from './credentials/store';
 import type { LiveStore } from './live';
 
-export function openAntigravityLogin(json: boolean, live: LiveStore, keychain: KeychainPort): number {
+export function openAntigravityLogin(json: boolean, live: LiveStore, keychain: CredentialPort): number {
   if (json) throw new AccountStateError('login is interactive and does not support --json', 'ACCOUNT_INPUT');
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new AccountStateError('login requires an interactive terminal', 'ACCOUNT_INPUT');

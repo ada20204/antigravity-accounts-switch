@@ -18,6 +18,7 @@ import { log } from './logger';
 import { accountService, registry, keychain, withFileLock, paths as accountPaths } from './accounts';
 import { readJsonBody, respondError } from './httpUtils';
 import { createAddAccountRouter } from './addAccountRoutes';
+import { executeAccountSwitch } from './switchService';
 
 const execAsync = promisify(exec);
 
@@ -37,6 +38,7 @@ export interface RouteState {
   lastAddedAccountId: string | null;
   knownPlans: Record<string, string>;
   port: number;
+  daemonToken: string;
 }
 
 export interface RouteActions {
@@ -45,6 +47,7 @@ export interface RouteActions {
   saveKnownPlans(): void;
   acquireBeginLock(): boolean;
   releaseBeginLock(): void;
+  openTerminal(name: string, command: string): Promise<void>;
 }
 
 // Which saved account the live credential actually belongs to, or null if it
@@ -70,7 +73,7 @@ async function resolveActiveAccountId(): Promise<string | null> {
 // every step runs `connect`/`login` bare — so this plain shell string carries
 // none of the injection risk the execFile-based JSON endpoints had to be
 // fixed for.
-function buildLoginTerminalScript(port: number): string {
+function buildLoginTerminalScript(port: number, daemonToken: string): string {
   const cli = JSON.stringify(path.join(__dirname, 'accounts', 'loginCli.js'));
   return [
     '#!/bin/bash',
@@ -121,7 +124,7 @@ function buildLoginTerminalScript(port: number): string {
     '    echo "Applying the new account to the running Antigravity session..."',
     // Without this the sign-in leaves the new account active in the
     // Keychain while the running hub keeps serving the old one.
-    `    curl -s -X POST http://127.0.0.1:${port}/api/hub-restart >/dev/null 2>&1 || echo "    (could not reach the accounts daemon — restart VS Code to apply)"`,
+    `    curl -s -X POST -H 'X-AG-Daemon-Token: ${daemonToken}' http://127.0.0.1:${port}/api/hub-restart >/dev/null 2>&1 || echo "    (could not reach the accounts daemon — restart VS Code to apply)"`,
     '    echo',
     '    echo "Done. The new account is now available in Antigravity."',
     '    echo',
@@ -174,6 +177,10 @@ export function createApiRouter(state: RouteState, actions: RouteActions) {
         respondError(res, 400, 'Missing or invalid accountId/label');
         return;
       }
+      if (!accountService.overview('antigravity-cli').accounts.some(a => a.account_id === accountId)) {
+        respondError(res, 400, 'Unknown accountId');
+        return;
+      }
       if (state.knownPlans[accountId] !== label) {
         state.knownPlans[accountId] = label;
         actions.saveKnownPlans();
@@ -188,60 +195,50 @@ export function createApiRouter(state: RouteState, actions: RouteActions) {
       try {
         const { accountId } = await readJsonBody(req);
         if (!accountId) throw new Error('Missing accountId');
-        log('SWITCH', 'requested', accountId);
 
-        const tSwitchStart = Date.now();
-        const output = withFileLock(accountPaths.switchLockPath, () => accountService.switchAccount(accountId));
-        // No longer "cliMs" — this used to be a subprocess spawn
-        // (agent-hub-accounts switch <id>), now an in-process call that
-        // still shells out to /usr/bin/security internally (keychain.ts).
-        // See docs/decisions/2026-08-26-vendor-agent-hub-accounts.md.
-        const switchMs = Date.now() - tSwitchStart;
-        log('SWITCH', 'succeeded', accountId);
-
-        // Respond before restarting the hub — restarting reloads the calling
-        // page itself; responding after would race the reload. See
-        // docs/decisions/superseded-hub-restart-window-reload.md.
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(output));
-
-        const hubRestart = await restartAntigravityHub();
-        // .detail is already the purpose-built human summary (strategy +
-        // pid/port + reload outcome) — the raw object's other fields are
-        // either restated by TIMING right below (numeric breakdown) or, on
-        // failure, would surface via the catch block instead.
-        log('SWITCH', 'hub restart result:', hubRestart.detail);
-        log('TIMING', 'switch', accountId, {
-          strategy: hubRestart.strategy,
-          switchMs,
-          hubStopMs: hubRestart.timingMs.stopHub,
-          hubHealthyMs: hubRestart.timingMs.hubHealthy,
-          reloadMs: hubRestart.timingMs.reload,
-          hubRestartTotalMs: hubRestart.timingMs.total,
-          grandTotalMs: switchMs + hubRestart.timingMs.total,
+        void executeAccountSwitch(accountId, {
+          source: 'api',
+          onSwitched(output) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(output));
+          },
+        }).catch((err) => {
+          if (!res.headersSent) respondError(res, 500, err?.message ?? String(err));
         });
+        return;
       } catch (e: any) {
         log('SWITCH', 'FAILED', e.message);
         respondError(res, 500, e.message);
+        return;
       }
-      return;
     }
 
     // Opens a real Terminal window — `login` hard-refuses to run any other
     // way (no --json, requires a TTY). See
     // docs/decisions/historical-add-account-terminal-required.md.
     if (url.pathname === '/api/login' && req.method === 'POST') {
-      // No dynamic account id is interpolated into this script, so unlike
-      // the JSON API handlers above it doesn't need execFile's injection fix.
-      const scriptPath = path.join(os.tmpdir(), `ag-switch-login-${Date.now()}.sh`);
-      fs.writeFileSync(scriptPath, buildLoginTerminalScript(state.port), { mode: 0o700 });
-
-      // Two separate -e args so the window is focused as well as opened.
-      await execAsync(
-        `osascript -e 'tell application "Terminal" to do script "bash ${scriptPath}"' ` +
-        `-e 'tell application "Terminal" to activate'`
+      // Symlink-safe creation via O_CREAT|O_EXCL|O_NOFOLLOW — same pattern
+      // as jsonStore.ts's saveJsonFile(). Date.now() + pid makes the name
+      // unique enough that O_EXCL's "file already exists" rejection is a
+      // safety signal (a race or a symlink), not a normal collision.
+      const scriptPath = path.join(os.tmpdir(), `ag-switch-login-${process.pid}-${Date.now()}.sh`);
+      const scriptContent = buildLoginTerminalScript(state.port, state.daemonToken);
+      const fd = fs.openSync(
+        scriptPath,
+        fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
+        0o700
       );
-      log('LOGIN', 'opened Terminal for interactive sign-in', scriptPath);
+      try {
+        fs.writeFileSync(fd, scriptContent);
+      } finally {
+        fs.closeSync(fd);
+      }
+
+      // Cross-platform: run inside VS Code's integrated terminal instead of
+      // shelling out to macOS-specific osascript / Terminal.app.
+      const runCommand = `bash "${scriptPath}"`;
+      await actions.openTerminal('Antigravity Account Sign-in', runCommand);
+      log('LOGIN', 'opened VS Code terminal for interactive sign-in', scriptPath);
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'terminal_opened', script: scriptPath }));

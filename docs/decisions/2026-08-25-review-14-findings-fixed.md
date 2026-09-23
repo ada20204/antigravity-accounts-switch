@@ -4,7 +4,7 @@
 
 **1(最严重). reaper 可能杀掉添加账号流程正在用的 hub(`hubRestart.ts`)**——10 秒宽限期从 spawn 时刻算,但 `begin()` 走的整窗口 reload 只等 CDP 命令 ack,不等 VS Code 真正重建完(实测 20-30 秒),`restartInProgress` 在 7-9 秒左右就清掉,刚好卡在宽限期内侧。**修法**:`ownedHubPids` 每条记录带上 `graceMs`,默认对应 iframe 快速刷新的 10 秒,`restartAntigravityHub()` 一旦确定走 `'window'` 策略就把这条记录的 `graceMs` 改成 45 秒(留足 20-30 秒实测值的余量)。
 
-**2. reaper 看不到跨重启的孤儿、也看不到扩展自己 spawn 的 hub**——`ownedHubPids` daemon 一重启就空了,老版本靠全局 `pgrep` 理论上啥孤儿最终都能收。**修法**:改回两层判断——`ownedHubPids` 里的 pid 走精确路径(不用等两次確认,10/45 秒宽限期到了没人引用就收);不在这个表里的 pid(扩展自己起的、或者上一轮 daemon 遗留的)走恢复出来的旧版推断逻辑(连续两次孤儿 + 只在 ≥2 个 hub 时动手)。两层加起来能力不比老版本差,常见情况(自己 spawn 的)还更精确。
+**2. reaper 看不到跨重启的孤儿、也看不到扩展自己 spawn 的 hub**——`ownedHubPids` daemon 一重启就空了。现在采用安全取舍：`ownedHubPids` 里的 pid 走精确路径(不用等两次确认,10/45 秒宽限期到了且没人引用就收);不在这个表里的 pid 不再根据瞬时 CDP 空引用推断回收，避免把启动中的真实 Hub 误杀。
 
 **3. `knownPlans` 新旧 daemon 混跑会互相破坏数据**——新的 `{schema, plans}` 包装结构变了,老版本读取逻辑("是不是个 object")会把整个包装对象当成 plans 映射本身用。**修法**:不只是加校验,直接把文件名从 `...plans.json` 改成 `...plans-v1.json`——老代码永远不会去读这个新文件名,不存在混读的可能;`PendingAdd`/`LastAddedAccountId` 只是加了字段(旧代码能安全忽略不认识的字段),不需要同样处理。
 

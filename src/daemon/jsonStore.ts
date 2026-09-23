@@ -43,7 +43,7 @@ export function saveJsonFile(file: string, value: unknown, logTag: string, logCo
       const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
       const fd = fs.openSync(tmp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
       try {
-        fs.writeSync(fd, JSON.stringify(value));
+        fs.writeFileSync(fd, JSON.stringify(value));
       } finally {
         fs.closeSync(fd);
       }

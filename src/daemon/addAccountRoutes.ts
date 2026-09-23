@@ -104,10 +104,10 @@ export function createAddAccountRouter(state: RouteState, actions: RouteActions)
           // Both stores have to go: clearing the Keychain alone leaves the hub
           // authenticated from its own cached session file, and clearing the
           // file alone leaves the Keychain for it to re-read at startup.
-          if (fs.existsSync(HUB_TOKEN_FILE)) {
-            fs.rmSync(HUB_TOKEN_FILE);
-            log('ADD_ACCOUNT', 'cleared cached hub session');
-          }
+          // force: true avoids the TOCTOU race of existsSync-then-rmSync
+          // (another process may delete it between the check and the remove).
+          fs.rmSync(HUB_TOKEN_FILE, { force: true });
+          log('ADD_ACCOUNT', 'cleared cached hub session');
           keychain.detachActive();
           log('ADD_ACCOUNT', 'detached active login (local only, not revoked)');
         }, { reloadStrategy: 'window' });
@@ -211,6 +211,9 @@ export function createAddAccountRouter(state: RouteState, actions: RouteActions)
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, noop: true, reason: 'still the backed-up account' }));
           return true;
+        }
+        if (state.pendingAdd.knownAccountIds.includes(accountId)) {
+          throw new Error('The reported account is already saved; refusing to overwrite its credential during add-account.');
         }
 
         const captured = withFileLock(accountPaths.switchLockPath, () => accountService.capture(accountId, accountId, true));

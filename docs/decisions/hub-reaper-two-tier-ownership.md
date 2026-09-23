@@ -1,4 +1,4 @@
-# Hub 回收器为什么分两层(owned / unowned)
+# Hub 回收器为什么只回收 owned hub
 
 ## 唯一安全的判断规则
 
@@ -7,7 +7,7 @@
 一个的那个。两个都不是"旧的",各自服务不同的 webview,按存活时间杀会误杀
 还有人用的那个。唯一安全的规则是"没有任何 iframe 还在引用这个端口"。
 
-## 为什么是两层,不是一层
+## 为什么不再回收 unowned hub
 
 - **Owned**(记在 `ownedHubPids` 里,`spawnHubOnSamePort` 写入的):我们确定
   是自己 spawn 的,一个孤零零的 owned hub、没有 iframe 引用,不管当前还有
@@ -18,11 +18,12 @@
   `graceMs`),因为实际接线要多久取决于走的是哪条 reload 路径——`'window'`
   策略的等待比单纯 iframe reload 长得多。
 
-- **Unowned**(`findHubPids()` 返回的其余部分:扩展自己 spawn 的,或者上一轮
-  daemon 生命周期里我们自己拥有过、但这一轮已经不记得的):没有直接的归属
-  信号,只能沿用旧版本"从 CDP target URL 反推"那套逻辑,配两个保护:连续两次
-  观测到孤立(单次快照可能刚好拍到扩展还没来得及接线的中间状态),以及只在
-  ≥2 个 hub 同时存在时才动手(单独一个没有 iframe 引用的 hub,可能只是扩展
-  自己养着的、还没用上的后备)。保留这一层是为了让"daemon 重启"不会整个丢失
-  回收能力——`ownedHubPids` 每次启动都是空的,早期版本只看这张表,daemon 一
-  重启就相当于失明。
+- 早期版本还尝试回收 `findHubPids()` 返回的 unowned hub：连续两次看到 CDP
+  没有引用，且同时存在至少两个 hub，就发送 SIGTERM。这个推断在启动/更新窗口
+  中不成立：Hub 可能已经监听端口，但 iframe 尚未出现在 CDP 快照里，导致真实
+  Antigravity 服务被误判为孤儿并被杀掉。现在跨 daemon 生命周期的 unowned hub
+  不再自动回收；宁可保留一个无主进程，也不能破坏用户正在启动的服务。
+
+回收器只处理本 daemon 在 `spawnHubOnSamePort()` 中明确记录的 `ownedHubPids`，并
+继续使用对应的启动宽限期和 CDP 引用检查。daemon 重启后不会恢复旧的 ownership，
+这是有意的安全取舍。

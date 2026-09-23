@@ -183,5 +183,36 @@ process.exit(2);
   assert.ok(aInHome2, 'imported account must appear in the fresh registry');
   assert.equal(aInHome2.is_active, true, 'imported credential must verify as active — proves the bundle carried a real, working secret, not just metadata');
 
+  // 6. Verify dual token file sync (agy token + hub jetski session token)
+  const tokenDir = path.join(root, 'tokens');
+  const agyToken = path.join(tokenDir, 'antigravity-oauth-token');
+  const jetskiToken = path.join(tokenDir, 'jetski-standalone-oauth-token');
+  const tokenSyncEnv = {
+    AGENT_HUB_ACCOUNTS_AGY_TOKEN_PATH: agyToken,
+    AGENT_HUB_ACCOUNTS_JETSKI_TOKEN_PATH: jetskiToken,
+  };
+
+  harness(`
+    const { accountService } = require(${JSON.stringify(compiledIndex)});
+    accountService.switchAccount('a@example.com');
+    console.log(JSON.stringify({ ok: true }));
+  `, tokenSyncEnv);
+
+  assert.ok(fs.existsSync(agyToken), 'agy token file must be synced on switch');
+  assert.ok(fs.existsSync(jetskiToken), 'hub jetski session token file must be synced on switch');
+  const agyContent = JSON.parse(fs.readFileSync(agyToken, 'utf8'));
+  const jetskiContent = JSON.parse(fs.readFileSync(jetskiToken, 'utf8'));
+  assert.equal(agyContent.refresh_token, 'refresh-a');
+  assert.equal(jetskiContent.refresh_token, 'refresh-a');
+
+  // Detaching active login must remove both token files
+  harness(`
+    const { keychain } = require(${JSON.stringify(compiledIndex)});
+    keychain.detachActive();
+    console.log(JSON.stringify({ ok: true }));
+  `, tokenSyncEnv);
+  assert.equal(fs.existsSync(agyToken), false, 'agy token must be removed on detach');
+  assert.equal(fs.existsSync(jetskiToken), false, 'hub jetski token must be removed on detach');
+
   fs.rmSync(root, { recursive: true, force: true });
 });

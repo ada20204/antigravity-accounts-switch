@@ -6,12 +6,13 @@
 // to rebuild its window (~7s instead of ~30-36s). Falls back to a full window
 // reload if anything about that fails. See docs/decisions/2026-08-22-same-port-respawn-optimization.md.
 
+import fs from 'fs';
 import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import { log } from './logger';
+import { type CdpTarget, listCdpTargets, CDP_HTTP_BASE as CDP_BASE } from './cdpClient';
 
 const execAsync = promisify(exec);
-const CDP_BASE = 'http://127.0.0.1:9222';
 const GRACEFUL_EXIT_TIMEOUT_MS = 5000;
 const HUB_HEALTH_TIMEOUT_MS = 25000;
 // same-port-respawn's iframe reload settles in milliseconds — the default
@@ -22,25 +23,16 @@ const IFRAME_RELOAD_GRACE_MS = 10_000;
 // docs/decisions/2026-08-23-add-account-native-signin-missing.md.
 const WINDOW_RELOAD_GRACE_MS = 45_000;
 
-interface CdpTarget {
-  id: string;
-  type: string;
-  url: string;
-  webSocketDebuggerUrl: string;
-}
-
 let restartInProgress = false;
+let reaperInProgress = false;
 
 // Hubs we ourselves spawned (spawnHubOnSamePort), keyed by pid — see
 // reapOrphanedHubs() below for how this is used. In-memory only, not
 // persisted: a pid is only ever meaningful within the daemon run that
 // recorded it, and trusting a pid recovered from a prior run risks a totally
 // unrelated process having since reused that number. A daemon restart means
-// this starts empty again — reapOrphanedHubs()'s unowned-pid fallback path
-// is what covers hubs from before the restart, not this map.
-//
-// port is cached at spawn time (already known from HubSpec — no reason to
-// re-derive it later via readHubPort()'s `ps` spawn on every reaper tick).
+// this starts empty again; hubs from before the restart are deliberately left
+// alone because their ownership cannot be proven safely.
 //
 // graceMs starts at IFRAME_RELOAD_GRACE_MS and gets bumped to
 // WINDOW_RELOAD_GRACE_MS by restartAntigravityHub() when it knows it's about
@@ -93,16 +85,6 @@ interface HubSpec {
   cwd: string;
 }
 
-async function readHubPort(pid: number): Promise<number | null> {
-  try {
-    const { stdout } = await execAsync(`ps -o command= -p ${pid}`);
-    const match = stdout.match(/--hub-port=(\d+)/);
-    return match ? Number(match[1]) : null;
-  } catch {
-    return null;
-  }
-}
-
 // Reads the live process's own argv and cwd rather than reconstructing them.
 // The extension appends a --add-dir per workspace folder plus any configured
 // serverArgs, so anything reconstructed from a fixed template would silently
@@ -119,9 +101,13 @@ async function readHubSpec(pid: number): Promise<HubSpec | null> {
 
     let cwd = '';
     try {
-      const { stdout: lsofOut } = await execAsync(`lsof -a -p ${pid} -d cwd -Fn`);
-      const line = lsofOut.split('\n').find(l => l.startsWith('n'));
-      if (line) cwd = line.slice(1).trim();
+      if (process.platform === 'linux') {
+        cwd = fs.readlinkSync(`/proc/${pid}/cwd`);
+      } else {
+        const { stdout: lsofOut } = await execAsync(`lsof -a -p ${pid} -d cwd -Fn`);
+        const line = lsofOut.split('\n').find(l => l.startsWith('n'));
+        if (line) cwd = line.slice(1).trim();
+      }
     } catch {
       // cwd only affects relative-path resolution; an empty one is survivable
     }
@@ -256,12 +242,6 @@ async function stopHubProcesses(): Promise<{ pids: number[]; forcedKill: number[
   return { pids, forcedKill };
 }
 
-async function listCdpTargets(): Promise<CdpTarget[]> {
-  const res = await fetch(`${CDP_BASE}/json`);
-  if (!res.ok) throw new Error(`CDP /json returned ${res.status}`);
-  return res.json();
-}
-
 // Page.reload/etc. only work on the top-level page target, not an iframe
 // subtarget — this is the actual VS Code workbench window (title "Visual
 // Studio Code", url starting with vscode-file://.../workbench.html).
@@ -295,11 +275,12 @@ async function reloadIframesOnPort(port: number): Promise<number> {
   }
 
   const contentIframes = targets.filter(
-    t => t.type === 'iframe' && t.url.includes(`127.0.0.1:${port}`)
+    t => t.type === 'iframe' && t.url.includes(`127.0.0.1:${port}`) && Boolean(t.webSocketDebuggerUrl)
   );
 
   let reloaded = 0;
   for (const target of contentIframes) {
+    if (!target.webSocketDebuggerUrl) continue;
     const ws = new WebSocket(target.webSocketDebuggerUrl);
     try {
       await new Promise<void>((resolve, reject) => {
@@ -354,8 +335,8 @@ async function reloadWorkbenchWindow(): Promise<boolean> {
     log('HUB_RESTART', 'CDP not reachable, cannot reload window', e.message);
     return false;
   }
-  if (!target) {
-    log('HUB_RESTART', 'workbench page target not found, cannot reload window');
+  if (!target || !target.webSocketDebuggerUrl) {
+    log('HUB_RESTART', 'workbench page target or ws url not found, cannot reload window');
     return false;
   }
   const ws = new WebSocket(target.webSocketDebuggerUrl);
@@ -382,17 +363,15 @@ async function reloadWorkbenchWindow(): Promise<boolean> {
   }
 }
 
-// Reaps hub processes no iframe references any more — two tiers (owned:
-// precise/fast via ownedHubPids; unowned: strike-counted inference, ≥2 hubs
-// required). See docs/decisions/hub-reaper-two-tier-ownership.md.
-const orphanStrikes = new Map<number, number>();
-const ORPHAN_STRIKES_BEFORE_REAP = 2;
+// Only hubs spawned by this daemon are eligible for reaping. An unowned hub
+// with no CDP iframe reference may simply be between process startup and the
+// first webview target; treating that transient state as orphaned can kill the
+// real Antigravity server and leave its port showing "Server failed to start".
 
-async function reapOrphanedHubs(): Promise<void> {
+async function reapOrphanedHubs(): Promise<boolean> {
   const pids = await findHubPids();
   if (pids.length === 0) {
-    orphanStrikes.clear();
-    return;
+    return false;
   }
 
   let targets: CdpTarget[];
@@ -400,7 +379,7 @@ async function reapOrphanedHubs(): Promise<void> {
     targets = await listCdpTargets();
   } catch {
     // Can't tell what's in use — assume everything is and try again next tick.
-    return;
+    return false;
   }
 
   const referencedPorts = new Set<number>();
@@ -410,14 +389,11 @@ async function reapOrphanedHubs(): Promise<void> {
   }
 
   const now = Date.now();
-  const unownedPids: number[] = [];
+  let reaped = false;
 
   for (const pid of pids) {
     const owned = ownedHubPids.get(pid);
-    if (!owned) {
-      unownedPids.push(pid);
-      continue;
-    }
+    if (!owned) continue;
     if (!isAlive(pid)) {
       ownedHubPids.delete(pid);
       continue;
@@ -428,47 +404,48 @@ async function reapOrphanedHubs(): Promise<void> {
     log('HUB_REAP', `reaping orphaned hub pid ${pid} (port ${owned.port}, no webview references it, spawned by us)`);
     await terminateHub(pid, 'HUB_REAP');
     ownedHubPids.delete(pid);
+    reaped = true;
   }
 
-  if (unownedPids.length < 2) {
-    for (const pid of orphanStrikes.keys()) {
-      if (!unownedPids.includes(pid)) orphanStrikes.delete(pid);
-    }
-    return;
-  }
-
-  for (const pid of unownedPids) {
-    const port = await readHubPort(pid);
-    if (port === null || referencedPorts.has(port)) {
-      orphanStrikes.delete(pid);
-      continue;
-    }
-
-    const strikes = (orphanStrikes.get(pid) ?? 0) + 1;
-    if (strikes < ORPHAN_STRIKES_BEFORE_REAP) {
-      orphanStrikes.set(pid, strikes);
-      log('HUB_REAP', `hub pid ${pid} (port ${port}) looks orphaned (${strikes}/${ORPHAN_STRIKES_BEFORE_REAP})`);
-      continue;
-    }
-
-    orphanStrikes.delete(pid);
-    log('HUB_REAP', `reaping orphaned hub pid ${pid} (port ${port}, no webview references it, unowned)`);
-    await terminateHub(pid, 'HUB_REAP');
-  }
-
-  for (const pid of orphanStrikes.keys()) {
-    if (!unownedPids.includes(pid)) orphanStrikes.delete(pid);
-  }
+  return reaped;
 }
 
 // Returns a stop function so activate() can dispose the timer on deactivate —
 // see docs/decisions/2026-08-26-extension-host-daemon.md.
-export function startHubReaperLoop(intervalMs = 30000): () => void {
-  const timer = setInterval(() => {
-    if (restartInProgress) return; // mid-restart the picture is intentionally inconsistent
-    reapOrphanedHubs().catch(e => log('HUB_REAP', 'reaper tick failed', e?.message ?? String(e)));
-  }, intervalMs);
-  return () => clearInterval(timer);
+export function startHubReaperLoop(baseIntervalMs = 30000): () => void {
+  // Exponential backoff: if consecutive ticks find nothing to reap, back off
+  // up to 5 minutes. Any actual reap resets to base. This eliminates the
+  // steady-state lsof CPU spikes (macOS lsof is notoriously slow) while
+  // keeping reaction time fast when hubs are actually being spawned/killed.
+  const MAX_INTERVAL_MS = 300_000;
+  let currentInterval = baseIntervalMs;
+  let timer: ReturnType<typeof setTimeout>;
+  let stopped = false;
+
+  const tick = () => {
+    if (stopped) return;
+    if (restartInProgress || reaperInProgress) {
+      timer = setTimeout(tick, currentInterval);
+      return; // state is intentionally unstable during either operation
+    }
+    reaperInProgress = true;
+    reapOrphanedHubs()
+      .then(reaped => {
+        if (reaped) {
+          currentInterval = baseIntervalMs; // reset on activity
+        } else {
+          currentInterval = Math.min(currentInterval * 2, MAX_INTERVAL_MS);
+        }
+      })
+      .catch(e => log('HUB_REAP', 'reaper tick failed', e?.message ?? String(e)))
+      .finally(() => {
+        reaperInProgress = false;
+        if (!stopped) timer = setTimeout(tick, currentInterval);
+      });
+  };
+
+  timer = setTimeout(tick, currentInterval);
+  return () => { stopped = true; clearTimeout(timer); };
 }
 
 export interface HubRestartResult {

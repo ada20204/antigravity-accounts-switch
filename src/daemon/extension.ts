@@ -11,13 +11,15 @@ import http from 'http';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import crypto from 'crypto';
 import { startCdpInjectorLoop } from './cdpInjector';
 import { startHubReaperLoop, setOwnWorkspacePaths } from './hubRestart';
 import { log, LOG_FILE, configureLogger } from './logger';
-import { readJsonBody, respondError, isAllowedOrigin } from './httpUtils';
+import { readJsonBody, respondError, isAllowedOrigin, requiresDaemonToken, DAEMON_TOKEN_HEADER, DAEMON_CORS_ALLOWED_HEADERS } from './httpUtils';
 import { loadJsonFile, saveJsonFile } from './jsonStore';
 import { createApiRouter, PENDING_ADD_SCHEMA, type PendingAdd, type RouteState } from './routes';
 import { createTransferRouter } from './transferRoutes';
+import { createStatusBarManager } from './statusBar';
 
 // This window's own daemon port — allocated in activate(), not a fixed
 // constant any more (a second window's extension host would hit EADDRINUSE
@@ -38,11 +40,42 @@ const STATIC_CONTENT_TYPES: Record<string, string> = {
 // Persisted to disk (not in-memory) so a daemon restart mid-flow can't drop
 // it; knownAccountIds distinguishes a genuinely new sign-in from switching to
 // an already-saved account. See docs/decisions/add-account-state-persistence.md.
-const PENDING_ADD_FILE = path.join(os.tmpdir(), 'antigravity-accounts-switch-pending-add.json');
-const LAST_ADDED_FILE = path.join(os.tmpdir(), 'antigravity-accounts-switch-last-added.json');
+interface StoragePaths {
+  pendingAddFile: string;
+  lastAddedFile: string;
+  planStoreFile: string;
+  addAccountLockFile: string;
+}
 
-function loadPendingAdd(): PendingAdd | null {
-  return loadJsonFile(PENDING_ADD_FILE, parsed => {
+function resolveStoragePaths(storageDir: string): StoragePaths {
+  try {
+    fs.mkdirSync(storageDir, { recursive: true, mode: 0o700 });
+  } catch {
+    // best-effort
+  }
+  const resolved: StoragePaths = {
+    pendingAddFile: path.join(storageDir, 'antigravity-accounts-switch-pending-add.json'),
+    lastAddedFile: path.join(storageDir, 'antigravity-accounts-switch-last-added.json'),
+    planStoreFile: path.join(storageDir, 'antigravity-accounts-switch-plans-v1.json'),
+    addAccountLockFile: path.join(storageDir, 'antigravity-accounts-switch-add-account.lock'),
+  };
+
+  // Seamless one-time migration from legacy /tmp to persistent storage
+  const legacyPairs = [
+    [path.join(os.tmpdir(), 'antigravity-accounts-switch-pending-add.json'), resolved.pendingAddFile],
+    [path.join(os.tmpdir(), 'antigravity-accounts-switch-last-added.json'), resolved.lastAddedFile],
+    [path.join(os.tmpdir(), 'antigravity-accounts-switch-plans-v1.json'), resolved.planStoreFile],
+  ];
+  for (const [legacy, dest] of legacyPairs) {
+    if (!fs.existsSync(dest) && fs.existsSync(legacy)) {
+      try { fs.copyFileSync(legacy, dest); } catch { /* ignore */ }
+    }
+  }
+  return resolved;
+}
+
+function loadPendingAdd(file: string): PendingAdd | null {
+  return loadJsonFile(file, parsed => {
     if (!parsed?.backupAccountId) return null;
     // A tagged schema this code doesn't recognize (e.g. a future v2 written
     // by a newer daemon) is a real "don't guess" case, same spirit as the
@@ -64,8 +97,8 @@ function loadPendingAdd(): PendingAdd | null {
 
 const LAST_ADDED_SCHEMA = 'antigravity-accounts-switch.last_added.v1';
 
-function loadLastAddedAccountId(): string | null {
-  return loadJsonFile(LAST_ADDED_FILE, parsed => {
+function loadLastAddedAccountId(file: string): string | null {
+  return loadJsonFile(file, parsed => {
     if (typeof parsed?.accountId !== 'string') return null;
     if (parsed.schema !== undefined && parsed.schema !== LAST_ADDED_SCHEMA) return null;
     return parsed.accountId;
@@ -82,11 +115,10 @@ function loadLastAddedAccountId(): string | null {
 // docs/decisions/2026-08-23-account-plan-tier.md.
 // Filename (not just content) carries the version — a structural shape
 // change, not an additive one; see docs/decisions/2026-08-25-review-14-findings-fixed.md.
-const PLAN_STORE_FILE = path.join(os.tmpdir(), 'antigravity-accounts-switch-plans-v1.json');
 const KNOWN_PLANS_SCHEMA = 'antigravity-accounts-switch.known_plans.v1';
 
-function loadKnownPlans(): Record<string, string> {
-  return loadJsonFile(PLAN_STORE_FILE, parsed => {
+function loadKnownPlans(file: string): Record<string, string> {
+  return loadJsonFile(file, parsed => {
     if (parsed?.schema === KNOWN_PLANS_SCHEMA && parsed.plans && typeof parsed.plans === 'object') return parsed.plans;
     return null;
   }) ?? {};
@@ -97,33 +129,32 @@ function loadKnownPlans(): Record<string, string> {
 // docs/decisions/2026-08-26-extension-host-daemon.md). Separate from
 // `pendingAdd`: that isn't written until after several awaits, leaving a race
 // window an in-memory-only guard couldn't close across processes.
-const ADD_ACCOUNT_LOCK_FILE = path.join(os.tmpdir(), 'antigravity-accounts-switch-add-account.lock');
 // Generous margin above begin()'s worst realistic runtime — reclaims the lock
 // if a daemon died mid-flow without releasing it, so a crash can't wedge
 // add-account shut forever.
 const ADD_ACCOUNT_LOCK_STALE_MS = 60_000;
 
-function acquireBeginLock(): boolean {
+function acquireBeginLock(lockFile: string): boolean {
   try {
-    const fd = fs.openSync(ADD_ACCOUNT_LOCK_FILE, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+    const fd = fs.openSync(lockFile, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
     fs.closeSync(fd);
     return true;
   } catch (e: any) {
     if (e?.code !== 'EEXIST') return false;
     try {
-      const age = Date.now() - fs.statSync(ADD_ACCOUNT_LOCK_FILE).mtimeMs;
+      const age = Date.now() - fs.statSync(lockFile).mtimeMs;
       if (age < ADD_ACCOUNT_LOCK_STALE_MS) return false;
-      fs.rmSync(ADD_ACCOUNT_LOCK_FILE, { force: true });
-      return acquireBeginLock();
+      fs.rmSync(lockFile, { force: true });
+      return acquireBeginLock(lockFile);
     } catch {
       return false;
     }
   }
 }
 
-function releaseBeginLock(): void {
+function releaseBeginLock(lockFile: string): void {
   try {
-    fs.rmSync(ADD_ACCOUNT_LOCK_FILE, { force: true });
+    fs.rmSync(lockFile, { force: true });
   } catch {
     // best-effort
   }
@@ -169,28 +200,44 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Tried wiring setWindowReloadFn() here; reverted as unsafe — see
   // docs/decisions/2026-08-26-extension-host-restart-experiment.md.
 
+  const storageDir = context.globalStorageUri?.fsPath || path.join(os.tmpdir(), 'antigravity-accounts-switch');
+  const storagePaths = resolveStoragePaths(storageDir);
+
+  const daemonToken = crypto.randomBytes(32).toString('hex');
   const state: RouteState = {
-    pendingAdd: loadPendingAdd(),
-    lastAddedAccountId: loadLastAddedAccountId(),
-    knownPlans: loadKnownPlans(),
+    pendingAdd: loadPendingAdd(storagePaths.pendingAddFile),
+    lastAddedAccountId: loadLastAddedAccountId(storagePaths.lastAddedFile),
+    knownPlans: loadKnownPlans(storagePaths.planStoreFile),
     port: 0, // set once listenOnFreePort() resolves below
+    daemonToken,
   };
   if (state.pendingAdd) log('ADD_ACCOUNT', 'resumed pending sign-in from previous daemon run', state.pendingAdd);
+
+  let statusBarManager: ReturnType<typeof createStatusBarManager> | null = null;
 
   const handleApiRequest = createApiRouter(state, {
     setPendingAdd(value) {
       state.pendingAdd = value ? { schema: PENDING_ADD_SCHEMA, ...value } : null;
-      saveJsonFile(PENDING_ADD_FILE, state.pendingAdd, 'ADD_ACCOUNT', 'pending state');
+      saveJsonFile(storagePaths.pendingAddFile, state.pendingAdd, 'ADD_ACCOUNT', 'pending state');
+      statusBarManager?.updateStatusBar();
     },
     setLastAddedAccountId(value) {
       state.lastAddedAccountId = value;
-      saveJsonFile(LAST_ADDED_FILE, value ? { schema: LAST_ADDED_SCHEMA, accountId: value } : null, 'ADD_ACCOUNT', 'last-added notification');
+      saveJsonFile(storagePaths.lastAddedFile, value ? { schema: LAST_ADDED_SCHEMA, accountId: value } : null, 'ADD_ACCOUNT', 'last-added notification');
+      statusBarManager?.updateStatusBar();
     },
     saveKnownPlans() {
-      saveJsonFile(PLAN_STORE_FILE, { schema: KNOWN_PLANS_SCHEMA, plans: state.knownPlans }, 'PLAN', 'known plans');
+      saveJsonFile(storagePaths.planStoreFile, { schema: KNOWN_PLANS_SCHEMA, plans: state.knownPlans }, 'PLAN', 'known plans');
+      statusBarManager?.updateStatusBar();
     },
-    acquireBeginLock,
-    releaseBeginLock,
+    acquireBeginLock: () => acquireBeginLock(storagePaths.addAccountLockFile),
+    releaseBeginLock: () => releaseBeginLock(storagePaths.addAccountLockFile),
+    openTerminal(name: string, command: string) {
+      const terminal = vscode.window.createTerminal({ name });
+      terminal.show(false);
+      terminal.sendText(command);
+      return Promise.resolve();
+    },
   });
 
   // The file picker is the one piece of /api/export|import that has to run
@@ -222,6 +269,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const server = http.createServer(async (req, res) => {
     const origin = req.headers.origin;
     const allowed = isAllowedOrigin(origin);
+    if (requiresDaemonToken(req.method, req.url) && req.headers[DAEMON_TOKEN_HEADER] !== daemonToken) {
+      log('REQ', req.method, req.url, `origin=${origin ?? '(none)'}`, 'REJECTED (daemon token)');
+      respondError(res, 401, 'Daemon authentication required');
+      return;
+    }
 
     // Rejects outright rather than just reflecting the header — see
     // isAllowedOrigin() in httpUtils.ts and docs/decisions/cors-allowlist-policy.md.
@@ -235,7 +287,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       res.setHeader('Access-Control-Allow-Origin', origin!);
     }
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Headers', DAEMON_CORS_ALLOWED_HEADERS);
 
     log('REQ', req.method, req.url, `origin=${origin ?? '(none)'}`, `corsAllowed=${allowed}`);
 
@@ -280,6 +332,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
       }
       await handleApiRequest(url, req, res);
+      if (url.pathname === '/api/switch') {
+        statusBarManager?.updateStatusBar();
+      }
     } catch (err: any) {
       respondError(res, 500, err.message);
     }
@@ -289,7 +344,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   log('BOOT', `Listening on http://127.0.0.1:${state.port}`);
   context.subscriptions.push({ dispose: () => server.close() });
 
-  const stopInjector = startCdpInjectorLoop(state.port);
+  statusBarManager = createStatusBarManager(context, state, async () => {
+    const cli = path.join(__dirname, 'accounts', 'loginCli.js');
+    const terminal = vscode.window.createTerminal({ name: 'Antigravity Account Sign-in' });
+    terminal.show(false);
+    terminal.sendText(`node "${cli}" login`);
+  });
+  context.subscriptions.push({ dispose: () => statusBarManager?.dispose() });
+
+  const stopInjector = startCdpInjectorLoop(state.port, daemonToken);
   const stopReaper = startHubReaperLoop();
   context.subscriptions.push({ dispose: stopInjector }, { dispose: stopReaper });
 }

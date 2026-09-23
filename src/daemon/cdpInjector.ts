@@ -4,25 +4,11 @@
 
 import { log } from './logger';
 import { getOwnHubPorts } from './hubRestart';
+import { CDP_WS_BASE, getBrowserWsUrl, listCdpTargets } from './cdpClient';
 
-const CDP_HTTP_BASE = 'http://127.0.0.1:9222';
-const CDP_WS_BASE = 'ws://127.0.0.1:9222';
-// Matches the content targets on a hub port, e.g.
-// http://127.0.0.1:54408/settings-standalone?... or .../?extensionView=true
-// — the port itself is checked against getOwnHubPorts() below, not this regex,
-// because CDP 9222 is shared across every open VS Code window (confirmed on
-// a real machine with two windows running), so without that check this would
-// happily inject into a sibling window's targets too.
 const TARGET_URL_RE = /^http:\/\/127\.0\.0\.1:(\d+)\/(settings-standalone)?\??/;
-
-// If the discovery WebSocket ever wedges without tripping its own close/error
-// handlers, this is the recovery path — not the primary detection mechanism.
 const FALLBACK_POLL_MS = 5000;
 const RECONNECT_DELAY_MS = 2000;
-// Caps how often getOwnHubPorts() (pgrep + per-pid ps/lsof) reruns during a
-// burst of events — the live test above saw 3 targetInfoChanged events for
-// one reload within ~2s, and a fresh value more than twice a second buys
-// nothing real (own hub ports only change right after a switch/restart).
 const OWN_PORTS_CACHE_MS = 500;
 
 function describeTarget(url: string): string {
@@ -36,16 +22,9 @@ function isOwnUrl(url: string, ownPorts: number[]): boolean {
   return !!match && ownPorts.includes(Number(match[1]));
 }
 
-async function getBrowserWsUrl(): Promise<string> {
-  const res = await fetch(`${CDP_HTTP_BASE}/json/version`);
-  if (!res.ok) throw new Error(`CDP /json/version returned ${res.status}`);
-  const { webSocketDebuggerUrl } = await res.json();
-  return webSocketDebuggerUrl;
-}
-
 // Not cached by target id — an in-place reload keeps the same id but wipes
 // the injected script, so every check re-verifies idempotently instead.
-async function injectInto(targetId: string, loaderSrc: string, styleSrc: string, daemonPort: number): Promise<'injected' | 'present'> {
+async function injectInto(targetId: string, loaderSrc: string, styleSrc: string, daemonPort: number, daemonToken: string): Promise<'injected' | 'present' | 'missing'> {
   // CDP's per-target debugger path is /devtools/page/<id> regardless of the
   // target's own `type` (confirmed live: an "iframe"-typed target's own
   // webSocketDebuggerUrl from /json used this same path) — constructible
@@ -57,32 +36,33 @@ async function injectInto(targetId: string, loaderSrc: string, styleSrc: string,
     ws.addEventListener('error', () => reject(new Error('CDP websocket error')), { once: true });
   });
 
-  // Read-only DOM bootstrap: creates one <script type="module"> and one
-  // <link rel="stylesheet">, both pointed at this window's own daemon port.
-  // Does not touch VS Code/extension state or navigation.
-  //
-  // The <link> is required, not cosmetic-only: main.ts does `import
-  // './ui/styles.css'`, which Vite's DEV SERVER auto-injects as a <style> tag
-  // but its LIBRARY-mode production build (what runtime.js now always is)
-  // instead emits it as a standalone style.css with no auto-loader.
+  const [runtimeResponse, styleResponse] = await Promise.all([fetch(loaderSrc), fetch(styleSrc)]);
+  if (!runtimeResponse.ok || !styleResponse.ok) {
+    throw new Error(`runtime assets unavailable (${runtimeResponse.status}/${styleResponse.status})`);
+  }
+  const runtimeSource = await runtimeResponse.text();
+  const styleSource = await styleResponse.text();
+
+  // Fetch the production assets in the extension host, then evaluate the
+  // JavaScript source through CDP. Appending a cross-origin <script> element
+  // is still subject to the Antigravity webview CSP and can report success
+  // while never executing; Runtime.evaluate is the actual injection boundary.
+  // CSS is inserted as a style element for the same reason.
   const expression = `
     (function() {
-      if (window.AntigravitySwitchRuntime) return 'present';
       window.__AG_DAEMON_PORT__ = ${daemonPort};
-      var link = document.createElement('link');
-      link.rel = 'stylesheet';
-      link.href = '${styleSrc}';
-      document.head.appendChild(link);
-      var s = document.createElement('script');
-      s.type = 'module';
-      s.src = '${loaderSrc}';
-      document.head.appendChild(s);
-      return 'injected';
+      window.__AG_DAEMON_TOKEN__ = '${daemonToken}';
+      if (window.AntigravitySwitchRuntime) return 'present';
+      var style = document.createElement('style');
+      style.textContent = ${JSON.stringify(styleSource)};
+      document.head.appendChild(style);
+      ${runtimeSource}
+      return window.AntigravitySwitchRuntime ? 'injected' : 'missing';
     })();
   `;
 
   try {
-    return await new Promise<'injected' | 'present'>((resolve, reject) => {
+    return await new Promise<'injected' | 'present' | 'missing'>((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('CDP eval timeout')), 5000);
       ws.addEventListener('message', (ev: any) => {
         const msg = JSON.parse(ev.data.toString());
@@ -103,7 +83,7 @@ async function injectInto(targetId: string, loaderSrc: string, styleSrc: string,
 // activate() — each window's extension host binds a different one), baked
 // into the injected loader's <script src>/<link href> at check time. Returns
 // a stop function so activate() can dispose everything on deactivate.
-export function startCdpInjectorLoop(daemonPort: number): () => void {
+export function startCdpInjectorLoop(daemonPort: number, daemonToken: string): () => void {
   const loaderSrc = `http://127.0.0.1:${daemonPort}/runtime.js`;
   const styleSrc = `http://127.0.0.1:${daemonPort}/style.css`;
   console.log('[CdpInjector] Watching for Antigravity content targets via CDP Target discovery...');
@@ -133,7 +113,8 @@ export function startCdpInjectorLoop(daemonPort: number): () => void {
     try {
       const ownPorts = await cachedOwnHubPorts();
       if (!isOwnUrl(url, ownPorts)) return;
-      const outcome = await injectInto(targetId, loaderSrc, styleSrc, daemonPort);
+      const outcome = await injectInto(targetId, loaderSrc, styleSrc, daemonPort, daemonToken);
+      if (outcome === 'missing') throw new Error('runtime evaluated but did not expose AntigravitySwitchRuntime');
       if (outcome === 'injected') {
         // Timestamped (unlike a plain console.log) so it can be diffed
         // against [HUB_RESTART]/[SWITCH] timestamps — see
@@ -152,9 +133,7 @@ export function startCdpInjectorLoop(daemonPort: number): () => void {
     if (ownPorts.length === 0) return; // this window's hub isn't up yet
     let targets: Array<{ id: string; type: string; url: string }>;
     try {
-      const res = await fetch(`${CDP_HTTP_BASE}/json`);
-      if (!res.ok) return;
-      targets = await res.json();
+      targets = await listCdpTargets();
     } catch {
       return; // VS Code not running / CDP port not open yet — retry next tick.
     }
