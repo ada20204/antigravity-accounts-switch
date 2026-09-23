@@ -117,47 +117,91 @@ function renderConcentricRing(options: {
   `;
 }
 
-export type AccountSortMode = 'quota-desc' | 'quota-asc' | 'default';
+export type SortColumn = 'tier' | 'gemini' | 'claude';
+export type SortDirection = 'desc' | 'asc';
 
-let currentSortMode: AccountSortMode = (() => {
-  try {
-    const saved = localStorage.getItem('ag_settings_sort_mode');
-    if (saved === 'quota-desc' || saved === 'quota-asc' || saved === 'default') return saved;
-  } catch {}
-  return 'quota-desc'; // Default to sorting by quota high to low
-})();
-
-function sortAccounts(list: SubscriptionAccount[], mode: AccountSortMode): SubscriptionAccount[] {
-  const sorted = [...list];
-  if (mode === 'quota-desc') {
-    return sorted.sort((a, b) => {
-      const qA = a.issue ? -1 : a.quotaPercent;
-      const qB = b.issue ? -1 : b.quotaPercent;
-      if (qB !== qA) return qB - qA;
-      if (a.isActive !== b.isActive) return a.isActive ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    });
-  }
-  if (mode === 'quota-asc') {
-    return sorted.sort((a, b) => {
-      const qA = a.issue ? -1 : a.quotaPercent;
-      const qB = b.issue ? -1 : b.quotaPercent;
-      if (qA !== qB) return qA - qB;
-      return a.name.localeCompare(b.name);
-    });
-  }
-  return sorted;
+export interface SortCriterion {
+  column: SortColumn;
+  direction: SortDirection;
 }
 
-function getSortLabel(mode: AccountSortMode): string {
-  switch (mode) {
-    case 'quota-desc':
-      return 'Quota ↓';
-    case 'quota-asc':
-      return 'Quota ↑';
-    case 'default':
-      return 'Default';
+let currentSortCriteria: SortCriterion[] = (() => {
+  try {
+    const saved = localStorage.getItem('ag_sort_criteria');
+    if (saved) {
+      const parsed = JSON.parse(saved) as SortCriterion[];
+      if (Array.isArray(parsed)) {
+        return parsed.filter(p => (p.column === 'tier' || p.column === 'gemini' || p.column === 'claude') && (p.direction === 'desc' || p.direction === 'asc'));
+      }
+    }
+    const old = localStorage.getItem('ag_settings_sort_mode');
+    if (old === 'quota-desc') return [{ column: 'gemini', direction: 'desc' }];
+    if (old === 'quota-asc') return [{ column: 'gemini', direction: 'asc' }];
+  } catch {}
+  return [];
+})();
+
+function getTierWeight(plan?: string | null): number {
+  const t = simplifyTier(plan);
+  return t === 'Ultra' ? 3 : t === 'Pro' ? 2 : t === 'Free' ? 1 : 0;
+}
+
+function compareByCriterion(a: SubscriptionAccount, b: SubscriptionAccount, crit: SortCriterion): number {
+  const mult = crit.direction === 'desc' ? -1 : 1;
+  if (crit.column === 'tier') {
+    const diff = getTierWeight(a.plan) - getTierWeight(b.plan);
+    return diff !== 0 ? diff * mult : 0;
   }
+  // 5h quota is primary metric, fallback to weekly if tied
+  const isGem = crit.column === 'gemini';
+  const fiveA = a.issue ? -1 : ((isGem ? a.gemini5h : a.threeP5h) ?? -1);
+  const fiveB = b.issue ? -1 : ((isGem ? b.gemini5h : b.threeP5h) ?? -1);
+  if (fiveA !== fiveB) return (fiveA - fiveB) * mult;
+
+  const wkA = a.issue ? -1 : ((isGem ? a.geminiWeekly : a.threePWeekly) ?? -1);
+  const wkB = b.issue ? -1 : ((isGem ? b.geminiWeekly : b.threePWeekly) ?? -1);
+  return wkA !== wkB ? (wkA - wkB) * mult : 0;
+}
+
+function sortAccounts(list: SubscriptionAccount[], criteria: SortCriterion[]): SubscriptionAccount[] {
+  if (criteria.length === 0) return [...list];
+  return [...list].sort((a, b) => {
+    for (const crit of criteria) {
+      const cmp = compareByCriterion(a, b, crit);
+      if (cmp !== 0) return cmp;
+    }
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function renderSortIndicator(col: SortColumn, criteria: SortCriterion[]): string {
+  const idx = criteria.findIndex(c => c.column === col);
+  if (idx < 0) return '';
+  const arrow = criteria[idx].direction === 'desc' ? '↓' : '↑';
+  const rank = criteria.length > 1 ? `<sup>${idx + 1}</sup>` : '';
+  return `<span class="ag-sort-indicator">${arrow}${rank}</span>`;
+}
+
+function handleHeaderSortClick(card: HTMLElement, col: SortColumn) {
+  const existingIdx = currentSortCriteria.findIndex(c => c.column === col);
+  if (existingIdx === 0) {
+    if (currentSortCriteria[0].direction === 'desc') {
+      currentSortCriteria[0].direction = 'asc';
+    } else {
+      currentSortCriteria.shift(); // 3rd click: remove from stack
+    }
+  } else if (existingIdx > 0) {
+    const [item] = currentSortCriteria.splice(existingIdx, 1);
+    item.direction = 'desc';
+    currentSortCriteria.unshift(item);
+  } else {
+    currentSortCriteria.unshift({ column: col, direction: 'desc' });
+  }
+  if (currentSortCriteria.length > 3) currentSortCriteria.length = 3;
+  try {
+    localStorage.setItem('ag_sort_criteria', JSON.stringify(currentSortCriteria));
+  } catch {}
+  renderSettingsCard(card, true);
 }
 
 // Re-renders only on a signature change (renderGuard's shouldSkipRender),
@@ -167,7 +211,7 @@ function getSortLabel(mode: AccountSortMode): string {
 // refresh button's label) the signature check can't see needs resetting.
 function renderSettingsCard(card: HTMLElement, force = false) {
   const rawAccounts = AccountStore.getAccounts();
-  const accounts = sortAccounts(rawAccounts, currentSortMode);
+  const accounts = sortAccounts(rawAccounts, currentSortCriteria);
   const { averagePercent, count } = AccountStore.getTotalQuota();
 
   // Only checked when the list is empty — one DOM scan, same cost as
@@ -178,7 +222,7 @@ function renderSettingsCard(card: HTMLElement, force = false) {
   const currentLoginEmail = accounts.length === 0 ? SemanticLocator.findAccountPanelEmail() : null;
 
   const signature = JSON.stringify([
-    currentSortMode,
+    currentSortCriteria,
     averagePercent,
     count,
     currentLoginEmail,
@@ -216,12 +260,15 @@ function renderSettingsCard(card: HTMLElement, force = false) {
         <span class="ag-card-badge ag-badge-compact">${count === 0 ? '0' : `${averagePercent}% avg`}</span>
       </div>
       <div class="ag-card-actions">
-        <button class="ag-card-add-btn ag-btn-sort" id="ag-settings-sort-btn" title="Sort accounts: Quota (High → Low), Quota (Low → High), Default Order">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:4px;vertical-align:-1px;flex-shrink:0;">
-            <path d="M3 6h18M6 12h12M9 18h6"/>
-          </svg>
-          <span class="ag-sort-label">${getSortLabel(currentSortMode)}</span>
-        </button>
+        ${currentSortCriteria.length > 0 ? `
+          <button class="ag-card-add-btn ag-btn-reset-sort" id="ag-settings-reset-sort" title="Reset all sorting and return to default account order">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:3px;flex-shrink:0;">
+              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+              <path d="M3 3v5h5"/>
+            </svg>
+            Reset
+          </button>
+        ` : ''}
         <button class="ag-card-add-btn ag-btn-check-all ag-btn-admin" id="ag-settings-refresh-all" title="Switches through every connected account to check its quota — not the same as the official per-account refresh">Check All Accounts</button>
         <button class="ag-card-add-btn ag-btn-export ag-btn-admin" id="ag-settings-export" title="Save all connected accounts, including their credentials, to a file you choose">Export</button>
         <button class="ag-card-add-btn ag-btn-import ag-btn-admin" id="ag-settings-import" title="Load accounts from a previously exported file">Import</button>
@@ -241,17 +288,22 @@ function renderSettingsCard(card: HTMLElement, force = false) {
         </div>
       ` : `
         <div class="ag-grid-header">
-          <span>Account</span>
-          <span class="ag-col-center">
+          <div class="ag-header-cell ag-header-sortable" data-sort-col="tier" title="Sort by Account Tier (Ultra → Pro → Free). Consecutive clicks prioritize and toggle direction.">
+            <span>Account / Tier</span>
+            ${renderSortIndicator('tier', currentSortCriteria)}
+          </div>
+          <div class="ag-header-cell ag-col-center ag-header-sortable" data-sort-col="gemini" title="Sort by Gemini 5h Quota. Consecutive clicks prioritize and toggle direction.">
             <span class="ag-col-label-full">Gemini</span>
             <span class="ag-col-label-compact" title="Gemini Quota">G</span>
-          </span>
-          <span class="ag-col-center">
+            ${renderSortIndicator('gemini', currentSortCriteria)}
+          </div>
+          <div class="ag-header-cell ag-col-center ag-header-sortable" data-sort-col="claude" title="Sort by Claude & GPT 5h Quota. Consecutive clicks prioritize and toggle direction.">
             <span class="ag-col-label-full">Claude & GPT</span>
             <span class="ag-col-label-compact" title="Claude & GPT Quota">C</span>
-          </span>
-          <span class="ag-col-center">Status</span>
-          <span class="ag-col-action-header ag-btn-admin"></span>
+            ${renderSortIndicator('claude', currentSortCriteria)}
+          </div>
+          <div class="ag-col-center">Status</div>
+          <div class="ag-col-action-header ag-btn-admin"></div>
         </div>
       `}
       ${accounts.map(acc => {
@@ -303,13 +355,19 @@ function renderSettingsCard(card: HTMLElement, force = false) {
     </div>
   `;
 
-  card.querySelector('#ag-settings-sort-btn')?.addEventListener('click', (e) => {
+  card.querySelectorAll('.ag-header-sortable').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const col = (e.currentTarget as HTMLElement).dataset.sortCol as SortColumn;
+      if (col) handleHeaderSortClick(card, col);
+    });
+  });
+
+  card.querySelector('#ag-settings-reset-sort')?.addEventListener('click', (e) => {
     e.stopPropagation();
-    const modes: AccountSortMode[] = ['quota-desc', 'quota-asc', 'default'];
-    const nextIdx = (modes.indexOf(currentSortMode) + 1) % modes.length;
-    currentSortMode = modes[nextIdx];
+    currentSortCriteria = [];
     try {
-      localStorage.setItem('ag_settings_sort_mode', currentSortMode);
+      localStorage.removeItem('ag_sort_criteria');
     } catch {}
     renderSettingsCard(card, true);
   });
