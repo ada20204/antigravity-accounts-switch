@@ -121,11 +121,9 @@ function renderPopupContent(container: HTMLElement) {
       e.stopPropagation();
       const el = e.currentTarget as HTMLElement;
       const id = el.dataset.accountId;
-      console.log('[accountPopup] sub-item clicked, accountId =', id);
       if (id) {
         await withActionPending(el, async () => {
-          const ok = await AccountStore.confirmAndSwitch(id);
-          console.log('[accountPopup] switchAccount resolved:', ok);
+          await AccountStore.confirmAndSwitch(id);
         });
       }
     });

@@ -14,7 +14,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { startCdpInjectorLoop } from './cdpInjector';
 import { startHubReaperLoop, setOwnWorkspacePaths } from './hubRestart';
-import { log, LOG_FILE, configureLogger } from './logger';
+import { log, LOG_FILE, configureLogger, showOutputChannel } from './logger';
 import { readJsonBody, respondError, isAllowedOrigin, requiresDaemonToken, DAEMON_TOKEN_HEADER, DAEMON_CORS_ALLOWED_HEADERS } from './httpUtils';
 import { loadJsonFile, saveJsonFile } from './jsonStore';
 import { createApiRouter, PENDING_ADD_SCHEMA, type PendingAdd, type RouteState } from './routes';
@@ -342,8 +342,29 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   });
 
   state.port = await listenOnFreePort(server, PORT_RANGE_START, PORT_RANGE_END);
-  log('BOOT', `Listening on http://127.0.0.1:${state.port}`);
+  log('BOOT', `🚀 Antigravity Accounts Switch v1.2.0 initialized [PID: ${process.pid}]`);
+  log('BOOT', `   • Platform: ${process.platform} (${os.release()})`);
+  log('BOOT', `   • Bridge Server: http://127.0.0.1:${state.port}`);
+  log('BOOT', `   • Log File: ${LOG_FILE}`);
+  log('BOOT', `   • Verbose Logging: ${verboseLogging ? 'enabled' : 'disabled'}`);
   context.subscriptions.push({ dispose: () => server.close() });
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('antigravityAccountsSwitch.openLogFile', async () => {
+      if (!fs.existsSync(LOG_FILE)) {
+        vscode.window.showInformationMessage('暂无日志文件生成');
+        return;
+      }
+      const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(LOG_FILE));
+      await vscode.window.showTextDocument(doc);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('antigravityAccountsSwitch.showOutput', () => {
+      showOutputChannel(false);
+    })
+  );
 
   statusBarManager = createStatusBarManager(context, state, async () => {
     const cli = path.join(__dirname, 'accounts', 'loginCli.js');

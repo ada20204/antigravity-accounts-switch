@@ -42,13 +42,12 @@ export async function executeAccountSwitch(
     const switchMs = Date.now() - tSwitchStart;
     const hubRestart = await restartAntigravityHub();
     log('SWITCH', 'hub restart result:', hubRestart.detail);
-    log('TIMING', 'switch', accountId, {
-      strategy: hubRestart.strategy,
-      switchMs,
-      hubStopMs: hubRestart.timingMs.stopHub,
-      hubHealthyMs: hubRestart.timingMs.hubHealthy,
-      reloadMs: hubRestart.timingMs.reload,
-    });
+    const totalMs = switchMs + hubRestart.timingMs.total;
+    log(
+      'TIMING',
+      `⏱️ Switch [${accountId}] finished in ${totalMs}ms ` +
+      `(Keychain: ${switchMs}ms | Hub Stop: ${hubRestart.timingMs.stopHub}ms | Health: ${hubRestart.timingMs.hubHealthy}ms | Reload: ${hubRestart.timingMs.reload}ms [${hubRestart.strategy}])`
+    );
     return { success: true, accountId, output, hubRestart };
   } catch (e: any) {
     log('HUB_RESTART', 'hub restart failed after switch', e?.message ?? String(e));

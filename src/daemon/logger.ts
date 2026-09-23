@@ -15,8 +15,9 @@ export const LOG_FILE = path.join(os.tmpdir(), 'antigravity-accounts-switch.log'
 // docs/decisions/2026-08-26-extension-host-daemon.md.
 const VERBOSE_TAGS = new Set(['REQ', 'FRONTEND']);
 
-interface OutputChannelLike {
+export interface OutputChannelLike {
   appendLine(value: string): void;
+  show?(preserveFocus?: boolean): void;
 }
 
 let outputChannel: OutputChannelLike | undefined;
@@ -27,6 +28,10 @@ let verboseLogging = false;
 export function configureLogger(channel: OutputChannelLike | undefined, verbose: boolean): void {
   outputChannel = channel;
   verboseLogging = verbose;
+}
+
+export function showOutputChannel(preserveFocus = true): void {
+  outputChannel?.show?.(preserveFocus);
 }
 
 function isVerboseOnly(tag: string, parts: unknown[]): boolean {
@@ -40,15 +45,30 @@ function isVerboseOnly(tag: string, parts: unknown[]): boolean {
   return false;
 }
 
-export function log(tag: string, ...parts: unknown[]): void {
-  const line = `[${new Date().toISOString()}] [${tag}] ` + parts.map(p => (typeof p === 'string' ? p : JSON.stringify(p))).join(' ');
-  console.log(line);
+const MAX_LOG_SIZE_BYTES = 2 * 1024 * 1024; // 2 MB log rotation cap
+
+function appendWithRotation(file: string, content: string): void {
   try {
-    fs.appendFileSync(LOG_FILE, line + '\n');
+    if (fs.existsSync(file)) {
+      const stat = fs.statSync(file);
+      if (stat.size > MAX_LOG_SIZE_BYTES) {
+        const backup = `${file}.1`;
+        try { if (fs.existsSync(backup)) fs.unlinkSync(backup); } catch { /* ignore */ }
+        try { fs.renameSync(file, backup); } catch { /* ignore */ }
+      }
+    }
+    fs.appendFileSync(file, content);
   } catch {
     // best-effort logging only
   }
+}
+
+export function log(tag: string, ...parts: unknown[]): void {
+  const line = `[${new Date().toISOString()}] [${tag}] ` + parts.map(p => (typeof p === 'string' ? p : JSON.stringify(p))).join(' ');
+  console.log(line);
+  appendWithRotation(LOG_FILE, line + '\n');
   if (outputChannel && (verboseLogging || !isVerboseOnly(tag, parts))) {
     outputChannel.appendLine(line);
   }
 }
+

@@ -86,7 +86,7 @@ async function injectInto(targetId: string, loaderSrc: string, styleSrc: string,
 export function startCdpInjectorLoop(daemonPort: number, daemonToken: string): () => void {
   const loaderSrc = `http://127.0.0.1:${daemonPort}/runtime.js`;
   const styleSrc = `http://127.0.0.1:${daemonPort}/style.css`;
-  console.log('[CdpInjector] Watching for Antigravity content targets via CDP Target discovery...');
+  log('CDP', 'watching for Antigravity content targets via CDP Target discovery');
 
   let stopped = false;
   let discoveryWs: WebSocket | null = null;
@@ -121,8 +121,8 @@ export function startCdpInjectorLoop(daemonPort: number, daemonToken: string): (
         // docs/decisions/2026-08-22-switch-timing-instrumentation.md.
         log('CDP_INJECT', 'injected into', describeTarget(url));
       }
-    } catch (e) {
-      console.warn(`[CdpInjector] Failed to inject into ${targetId}:`, e);
+    } catch (e: any) {
+      log('CDP_INJECT', `failed to inject into ${targetId}`, e?.message ?? String(e));
     } finally {
       inFlight.delete(targetId);
     }

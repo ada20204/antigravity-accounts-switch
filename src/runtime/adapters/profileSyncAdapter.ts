@@ -31,9 +31,6 @@ export class ProfileSyncAdapter {
         if (nameNode) {
           nameNode.textContent = activeAccount.name;
         }
-
-        // Does not touch the <img> avatar — see docs/decisions/profile-trigger-sync-not-coordinate.md, "头像".
-        console.log('[ProfileSyncAdapter] Safely updated bottom trigger strictly in container');
       }
     } catch (e) {
       console.warn('[ProfileSyncAdapter] Error in sync:', e);

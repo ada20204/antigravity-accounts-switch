@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { accountService } from './accounts';
-import { log } from './logger';
+import { log, showOutputChannel } from './logger';
 import type { RouteState } from './routes';
 import { executeAccountSwitch, parseQuotaOverview, simplifyTier } from './switchService';
 
@@ -73,7 +73,7 @@ export function createStatusBarManager(
   // QuickPick item interface
   interface AccountQuickPickItem extends vscode.QuickPickItem {
     accountId?: string;
-    action?: 'add' | 'refresh';
+    action?: 'add' | 'refresh' | 'show_logs';
   }
 
   const switchAccountCommand = vscode.commands.registerCommand(
@@ -116,6 +116,11 @@ export function createStatusBarManager(
           detail: '从缓存中重新读取并刷新所有已保存账号的配额状态',
           action: 'refresh',
         });
+        items.push({
+          label: '$(output) 打开运行日志',
+          detail: '查看插件运行日志及详细调试输出',
+          action: 'show_logs',
+        });
 
         const selected = await vscode.window.showQuickPick(items, {
           placeHolder: '选择要切换的 Antigravity 账号，或执行管理操作',
@@ -124,6 +129,11 @@ export function createStatusBarManager(
         });
 
         if (!selected) return;
+
+        if (selected.action === 'show_logs') {
+          showOutputChannel(false);
+          return;
+        }
 
         if (selected.action === 'add') {
           await openLoginTerminal();
@@ -164,13 +174,15 @@ export function createStatusBarManager(
                 updateStatusBar();
                 vscode.window.showInformationMessage(`成功切换至账号: ${targetId}`);
               } else {
-                vscode.window.showErrorMessage(`切换账号失败: ${res.error}`);
+                const action = await vscode.window.showErrorMessage(`切换账号失败: ${res.error}`, '查看输出日志');
+                if (action === '查看输出日志') showOutputChannel(false);
               }
             }
           );
         }
       } catch (e: any) {
-        vscode.window.showErrorMessage(`切换账号失败: ${e?.message ?? String(e)}`);
+        const action = await vscode.window.showErrorMessage(`切换账号失败: ${e?.message ?? String(e)}`, '查看输出日志');
+        if (action === '查看输出日志') showOutputChannel(false);
       }
     }
   );

@@ -23,6 +23,16 @@
         "command": "antigravityAccountsSwitch.refreshQuota",
         "title": "Refresh All Quotas",
         "category": "Antigravity"
+      },
+      {
+        "command": "antigravityAccountsSwitch.openLogFile",
+        "title": "Open Log File",
+        "category": "Antigravity"
+      },
+      {
+        "command": "antigravityAccountsSwitch.showOutput",
+        "title": "Show Output Logs",
+        "category": "Antigravity"
       }
     ],
     "configuration": {

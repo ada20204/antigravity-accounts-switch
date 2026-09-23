@@ -238,7 +238,6 @@ export class AccountStore {
   }
 
   private static async doSwitch(id: string): Promise<boolean> {
-    console.log('[AccountStore] Seamlessly switching account to:', id);
     this.remoteLog('switchAccount called', { id, pageOrigin: window.location.origin });
 
     const previousAccounts = this.getAccounts().map(acc => ({ ...acc }));
@@ -262,7 +261,6 @@ export class AccountStore {
     // 2. 调用 Daemon 写入 Keychain；失败必须回滚，否则 UI 会显示已切换到一个实际上后端没切过去的账号
     const res = await this.request('/api/switch', { body: { accountId: id } });
     if (res.ok) {
-      console.log('[AccountStore] Keychain slot updated successfully');
       this.remoteLog('switchAccount daemon call succeeded', { id });
       await this.fetchLiveAccounts(); // re-read real state, don't trust the optimistic flip
       return true;

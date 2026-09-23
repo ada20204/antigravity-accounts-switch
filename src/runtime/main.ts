@@ -5,8 +5,6 @@ import { startAddAccountPromptLoop } from './ui/addAccountPrompt';
 import { SemanticLocator } from './adapters/semanticLocator';
 import { AccountStore } from './services/accountStore';
 
-console.log('[Antigravity Multi-Account Enhancer] Runtime clean event init...');
-
 let popupInstance: HTMLElement | null = null;
 let badgeInstance: HTMLElement | null = null;
 let hoverBoundTrigger: HTMLElement | null = null;
