@@ -1,8 +1,8 @@
-import { AccountStore } from '../services/accountStore';
+import { AccountStore, type SubscriptionAccount } from '../services/accountStore';
 import { SemanticLocator } from '../adapters/semanticLocator';
 import { showConfirm, showAlert } from './confirmDialog';
-import { bindUntilRemoved, unbind, shouldSkipRender, renderOrDefer } from './renderGuard';
-import { escapeHtml } from '../adapters/domUtils';
+import { bindUntilRemoved, unbind, shouldSkipRender, renderOrDefer, withActionPending } from './renderGuard';
+import { escapeHtml, simplifyTier } from '../adapters/domUtils';
 
 // bindUntilRemoved dedups by element reference — it only replaces a binding
 // made on the SAME element. A Settings tab switch destroys our card and the
@@ -13,17 +13,14 @@ import { escapeHtml } from '../adapters/domUtils';
 let lastBoundCard: HTMLElement | null = null;
 
 export function injectSettingsEnhancements() {
-  // Opportunistic: only present on the Settings → General sub-page, and only
-  // reflects whichever account is active right now. Cheap to check every
-  // tick — findAccountPlanLabel() is a single DOM scan — and reportPlan()
-  // dedups internally against what it last actually sent, so an account the
-  // user never opens this sub-page for just stays 'Unknown' until they do,
-  // and calling this unconditionally every tick doesn't spam the daemon. See
-  // docs/decisions/2026-08-23-account-plan-tier.md.
-  const planLabel = SemanticLocator.findAccountPlanLabel();
+  // Single-pass DOM scan for plan label and current login email
+  const { plan: planLabel, email: currentLoginEmail } = SemanticLocator.scanSettingsMetadata();
   if (planLabel) {
     const active = AccountStore.getAccounts().find(a => a.isActive);
     if (active) AccountStore.reportPlan(active.id, planLabel);
+  }
+  if (AccountStore.getAccounts().length === 0 && currentLoginEmail) {
+    AccountStore.rememberCurrentLogin(currentLoginEmail);
   }
 
   // Lives as the last child of the native quota container, so it sits below
@@ -66,19 +63,101 @@ export function injectSettingsEnhancements() {
   document.getElementById('ag-settings-nav-item')?.remove();
 }
 
-// Matches the official [data-testid="quota-progress-circle"] ring: viewBox 0 0 32 32,
-// r=13 (circumference ~81.68), track at stroke-opacity 0.4 under a colored value arc.
-function renderQuotaRing(percent: number, color: string): string {
-  const clamped = Math.max(0, Math.min(100, percent));
-  const circumference = 2 * Math.PI * 13;
-  const offset = circumference * (1 - clamped / 100);
+function getQuotaColor(percent: number | null | undefined): string {
+  if (percent == null) return '#6b7280';
+  if (percent < 20) return '#ef4444';
+  if (percent < 50) return '#f59e0b';
+  return '#22c55e';
+}
+
+function renderConcentricRing(options: {
+  fiveHour: number | null | undefined;
+  weekly: number | null | undefined;
+  issue?: string | null;
+  label: string;
+}): string {
+  const { fiveHour, weekly, issue, label } = options;
+  const hasIssue = Boolean(issue);
+  const fiveHVal = hasIssue ? 0 : fiveHour;
+  const weeklyVal = hasIssue ? 0 : weekly;
+
+  const weeklyClamped = weeklyVal != null ? Math.max(0, Math.min(100, weeklyVal)) : null;
+  const fiveHClamped = fiveHVal != null ? Math.max(0, Math.min(100, fiveHVal)) : null;
+
+  // Outer ring (Weekly): R=16, stroke-width=3. C = 2 * PI * 16 ≈ 100.53
+  const outerR = 16;
+  const outerC = 2 * Math.PI * outerR;
+  const outerOffset = weeklyClamped != null ? outerC * (1 - weeklyClamped / 100) : outerC;
+  const outerColor = hasIssue ? '#ef4444' : getQuotaColor(weeklyClamped);
+
+  // Inner ring (5h): R=11, stroke-width=3. C = 2 * PI * 11 ≈ 69.12
+  const innerR = 11;
+  const innerC = 2 * Math.PI * innerR;
+  const innerOffset = fiveHClamped != null ? innerC * (1 - fiveHClamped / 100) : innerC;
+  const innerColor = hasIssue ? '#ef4444' : getQuotaColor(fiveHClamped);
+
+  const tooltip = `${label}\n外环(周配额): ${weeklyVal != null ? weeklyVal + '%' : '无'}\n内环(5h配额): ${fiveHVal != null ? fiveHVal + '%' : '无'}`;
+
   return `
-    <svg class="ag-quota-ring" viewBox="0 0 32 32" aria-hidden="true">
-      <circle class="ag-quota-ring-track" cx="16" cy="16" r="13"></circle>
-      <circle class="ag-quota-ring-value" cx="16" cy="16" r="13"
-        style="stroke:${color};stroke-dasharray:${circumference};stroke-dashoffset:${offset};"></circle>
+    <svg class="ag-concentric-ring" viewBox="0 0 40 40" title="${escapeHtml(tooltip)}" aria-label="${escapeHtml(tooltip)}">
+      <!-- Outer Track (Weekly) -->
+      <circle class="ag-ring-track" cx="20" cy="20" r="${outerR}"></circle>
+      ${weeklyClamped != null ? `
+      <circle class="ag-ring-value" cx="20" cy="20" r="${outerR}"
+        style="stroke:${outerColor};stroke-dasharray:${outerC.toFixed(2)};stroke-dashoffset:${outerOffset.toFixed(2)};"></circle>
+      ` : ''}
+
+      <!-- Inner Track (5h) -->
+      <circle class="ag-ring-track" cx="20" cy="20" r="${innerR}" style="${fiveHClamped == null ? 'opacity:0.2;' : ''}"></circle>
+      ${fiveHClamped != null ? `
+      <circle class="ag-ring-value" cx="20" cy="20" r="${innerR}"
+        style="stroke:${innerColor};stroke-dasharray:${innerC.toFixed(2)};stroke-dashoffset:${innerOffset.toFixed(2)};"></circle>
+      ` : ''}
     </svg>
   `;
+}
+
+export type AccountSortMode = 'quota-desc' | 'quota-asc' | 'default';
+
+let currentSortMode: AccountSortMode = (() => {
+  try {
+    const saved = localStorage.getItem('ag_settings_sort_mode');
+    if (saved === 'quota-desc' || saved === 'quota-asc' || saved === 'default') return saved;
+  } catch {}
+  return 'quota-desc'; // Default to sorting by quota high to low
+})();
+
+function sortAccounts(list: SubscriptionAccount[], mode: AccountSortMode): SubscriptionAccount[] {
+  const sorted = [...list];
+  if (mode === 'quota-desc') {
+    return sorted.sort((a, b) => {
+      const qA = a.issue ? -1 : a.quotaPercent;
+      const qB = b.issue ? -1 : b.quotaPercent;
+      if (qB !== qA) return qB - qA;
+      if (a.isActive !== b.isActive) return a.isActive ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+  }
+  if (mode === 'quota-asc') {
+    return sorted.sort((a, b) => {
+      const qA = a.issue ? -1 : a.quotaPercent;
+      const qB = b.issue ? -1 : b.quotaPercent;
+      if (qA !== qB) return qA - qB;
+      return a.name.localeCompare(b.name);
+    });
+  }
+  return sorted;
+}
+
+function getSortLabel(mode: AccountSortMode): string {
+  switch (mode) {
+    case 'quota-desc':
+      return 'Quota ↓';
+    case 'quota-asc':
+      return 'Quota ↑';
+    case 'default':
+      return 'Default';
+  }
 }
 
 // Re-renders only on a signature change (renderGuard's shouldSkipRender),
@@ -87,7 +166,8 @@ function renderQuotaRing(percent: number, color: string): string {
 // `force` covers the one remaining case: resetting a UI-only artifact (the
 // refresh button's label) the signature check can't see needs resetting.
 function renderSettingsCard(card: HTMLElement, force = false) {
-  const accounts = AccountStore.getAccounts();
+  const rawAccounts = AccountStore.getAccounts();
+  const accounts = sortAccounts(rawAccounts, currentSortMode);
   const { averagePercent, count } = AccountStore.getTotalQuota();
 
   // Only checked when the list is empty — one DOM scan, same cost as
@@ -98,23 +178,53 @@ function renderSettingsCard(card: HTMLElement, force = false) {
   const currentLoginEmail = accounts.length === 0 ? SemanticLocator.findAccountPanelEmail() : null;
 
   const signature = JSON.stringify([
+    currentSortMode,
     averagePercent,
     count,
     currentLoginEmail,
-    accounts.map(a => [a.id, a.name, a.quotaPercent, a.isActive, a.issue ?? '', a.geminiWeekly ?? '', a.gemini5h ?? '']),
+    accounts.map(a => [a.id, a.name, a.plan, a.quotaPercent, a.isActive, a.issue ?? '', a.geminiWeekly ?? '', a.gemini5h ?? '', a.threePWeekly ?? '', a.threeP5h ?? '']),
   ]);
   if (shouldSkipRender(card, signature, force)) return;
+
+  // Responsive mode detection: compact when container < 520px (e.g. Chat popover)
+  const initialWidth = card.clientWidth || card.parentElement?.clientWidth || 0;
+  if (initialWidth > 0) {
+    card.classList.toggle('ag-compact', initialWidth < 520);
+  }
+  const inPopover = Boolean(card.closest('[role="dialog"], [role="menu"], [class*="popover"], [class*="flyout"], [class*="dropdown"], [class*="quick-input"]'));
+  card.classList.toggle('ag-in-popover', inPopover);
+
+  if (typeof ResizeObserver !== 'undefined' && !card.dataset.hasResize) {
+    card.dataset.hasResize = 'true';
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const width = entry.contentRect.width;
+        if (width > 0) {
+          card.classList.toggle('ag-compact', width < 520);
+        }
+      }
+    });
+    ro.observe(card);
+  }
 
   card.innerHTML = `
     <div class="ag-card-header">
       <div class="ag-card-title-group">
-        <span class="ag-card-title">Connected Subscriptions & Multi-Account Quota</span>
-        <span class="ag-card-badge">${count === 0 ? 'No accounts connected' : `${averagePercent}% avg across ${count} account${count === 1 ? '' : 's'}`}</span>
+        <span class="ag-card-title ag-title-full">Connected Subscriptions & Multi-Account Quota</span>
+        <span class="ag-card-title ag-title-compact">Accounts Quota</span>
+        <span class="ag-card-badge ag-badge-full">${count === 0 ? 'No accounts connected' : `${averagePercent}% avg across ${count} account${count === 1 ? '' : 's'}`}</span>
+        <span class="ag-card-badge ag-badge-compact">${count === 0 ? '0' : `${averagePercent}% avg`}</span>
       </div>
-      <div style="display:flex;gap:8px;">
-        <button class="ag-card-add-btn" id="ag-settings-refresh-all" title="Switches through every connected account to check its quota — not the same as the official per-account refresh">Check All Accounts</button>
-        <button class="ag-card-add-btn" id="ag-settings-export" title="Save all connected accounts, including their credentials, to a file you choose">Export</button>
-        <button class="ag-card-add-btn" id="ag-settings-import" title="Load accounts from a previously exported file">Import</button>
+      <div class="ag-card-actions">
+        <button class="ag-card-add-btn ag-btn-sort" id="ag-settings-sort-btn" title="Sort accounts: Quota (High → Low), Quota (Low → High), Default Order">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:4px;vertical-align:-1px;flex-shrink:0;">
+            <path d="M3 6h18M6 12h12M9 18h6"/>
+          </svg>
+          <span class="ag-sort-label">${getSortLabel(currentSortMode)}</span>
+        </button>
+        <button class="ag-card-add-btn ag-btn-check-all ag-btn-admin" id="ag-settings-refresh-all" title="Switches through every connected account to check its quota — not the same as the official per-account refresh">Check All Accounts</button>
+        <button class="ag-card-add-btn ag-btn-export ag-btn-admin" id="ag-settings-export" title="Save all connected accounts, including their credentials, to a file you choose">Export</button>
+        <button class="ag-card-add-btn ag-btn-import ag-btn-admin" id="ag-settings-import" title="Load accounts from a previously exported file">Import</button>
       </div>
     </div>
     
@@ -129,60 +239,100 @@ function renderSettingsCard(card: HTMLElement, force = false) {
             </div>
           ` : ''}
         </div>
-      ` : ''}
+      ` : `
+        <div class="ag-grid-header">
+          <span>Account</span>
+          <span class="ag-col-center">
+            <span class="ag-col-label-full">Gemini</span>
+            <span class="ag-col-label-compact" title="Gemini Quota">G</span>
+          </span>
+          <span class="ag-col-center">
+            <span class="ag-col-label-full">Claude & GPT</span>
+            <span class="ag-col-label-compact" title="Claude & GPT Quota">C</span>
+          </span>
+          <span class="ag-col-center">Status</span>
+          <span class="ag-col-action-header ag-btn-admin"></span>
+        </div>
+      `}
       ${accounts.map(acc => {
-        const ringColor = acc.issue ? '#ef4444' : acc.quotaPercent < 20 ? '#f59e0b' : '#22c55e';
+        const tier = simplifyTier(acc.plan);
+        const tierClass = `tier-${tier.toLowerCase()}`;
         return `
-        <div class="ag-sub-box ${acc.isActive ? 'active' : ''}" data-account-id="${escapeHtml(acc.id)}">
-          <div class="ag-sub-box-header">
-            <div style="display:flex;align-items:center;gap:8px;min-width:0;">
+        <div class="ag-sub-box ${acc.isActive ? 'active' : ''}" data-account-id="${escapeHtml(acc.id)}" title="${acc.isActive ? 'Current active account' : 'Click to switch to this account'}">
+          <div class="ag-sub-box-row">
+            <div class="ag-sub-box-ident">
               <span class="ag-dot" style="background:${acc.color};"></span>
-              <span class="ag-sub-box-name">${escapeHtml(acc.name)}</span>
+              <span class="ag-sub-box-name" title="${escapeHtml(acc.name)}">${escapeHtml(acc.name)}</span>
+              <span class="ag-tier-badge ${tierClass}">${escapeHtml(tier)}</span>
             </div>
-            ${acc.isActive ? '<span style="font-size:10px;color:#4ade80;font-weight:600;white-space:nowrap;">ACTIVE</span>' : ''}
+
+            <div class="ag-quota-col" title="Gemini&#10;外环(周配额): ${acc.geminiWeekly != null ? acc.geminiWeekly + '%' : '无'}&#10;内环(5h配额): ${acc.gemini5h != null ? acc.gemini5h + '%' : '无'}">
+              ${renderConcentricRing({ fiveHour: acc.gemini5h, weekly: acc.geminiWeekly, issue: acc.issue, label: 'Gemini' })}
+            </div>
+
+            <div class="ag-quota-col" title="Claude & GPT&#10;外环(周配额): ${acc.threePWeekly != null ? acc.threePWeekly + '%' : '无'}&#10;内环(5h配额): ${acc.threeP5h != null ? acc.threeP5h + '%' : '无'}">
+              ${renderConcentricRing({ fiveHour: acc.threeP5h, weekly: acc.threePWeekly, issue: acc.issue, label: 'Claude & GPT' })}
+            </div>
+
+            <div class="ag-status-col">
+              ${acc.isActive ? `
+                <span class="ag-active-badge">Active</span>
+              ` : `
+                <span class="ag-switch-badge">Switch</span>
+              `}
+            </div>
+
+            <div class="ag-actions-col ag-btn-admin">
+              <button class="ag-remove-icon-btn" data-account-id="${escapeHtml(acc.id)}" title="Remove ${escapeHtml(acc.name)}" aria-label="Remove account">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6"/>
+                </svg>
+              </button>
+            </div>
           </div>
-          <div class="ag-sub-box-main">
-            <span class="ag-sub-box-val" style="${acc.issue ? 'color:#ef4444;' : ''}">
-              ${acc.issue ? escapeHtml(acc.issue) : `${acc.quotaPercent}% Remaining`}
-            </span>
-            ${renderQuotaRing(acc.issue ? 0 : acc.quotaPercent, ringColor)}
-          </div>
+
+          ${acc.issue ? `
           <div class="ag-sub-box-mask" style="display:flex;justify-content:space-between;align-items:center;">
-            <span>Gemini weekly ${acc.geminiWeekly ?? 100}% · 5-hour ${acc.gemini5h ?? 100}%</span>
-            <span style="display:flex;gap:10px;">
-              <span style="font-size:11px;color:#60a5fa;cursor:pointer;" class="ag-switch-btn">${acc.isActive ? 'In Use' : 'Switch'}</span>
-              <span style="font-size:11px;color:#9ca3af;cursor:pointer;" class="ag-remove-btn" data-account-id="${escapeHtml(acc.id)}">Remove</span>
-            </span>
+            <span style="color:#ef4444;font-size:11px;">⚠️ ${escapeHtml(acc.issue)}</span>
+            <span style="font-size:11px;color:#9ca3af;">0% Remaining</span>
           </div>
+          ` : ''}
         </div>
       `;
       }).join('')}
     </div>
   `;
 
+  card.querySelector('#ag-settings-sort-btn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const modes: AccountSortMode[] = ['quota-desc', 'quota-asc', 'default'];
+    const nextIdx = (modes.indexOf(currentSortMode) + 1) % modes.length;
+    currentSortMode = modes[nextIdx];
+    try {
+      localStorage.setItem('ag_settings_sort_mode', currentSortMode);
+    } catch {}
+    renderSettingsCard(card, true);
+  });
+
   card.querySelectorAll('.ag-sub-box').forEach(box => {
     box.addEventListener('click', async (e) => {
+      if ((e.target as HTMLElement).closest('.ag-remove-icon-btn')) return;
       const el = e.currentTarget as HTMLElement;
+      if (el.classList.contains('active')) return;
       const id = el.dataset.accountId;
       if (id) {
-        el.style.opacity = '0.5';
-        await AccountStore.confirmAndSwitch(id);
-        // Direct single-element reset, not a full-card force-rebuild — same
-        // fix accountPopup.ts already used for the identical scenario. Must
-        // run even when the switch changed nothing (cancelled, or already the
-        // active account), which is why it's unconditional rather than folded
-        // into the data-driven render below.
-        el.style.opacity = '';
-        // Still re-render normally afterward in case the switch itself did
-        // change the data (a real switch changes which account is ACTIVE).
-        renderSettingsCard(card);
+        await withActionPending(el, async () => {
+          await AccountStore.confirmAndSwitch(id);
+          renderSettingsCard(card);
+        });
       }
     });
   });
 
-  card.querySelectorAll('.ag-remove-btn').forEach(btn => {
+  card.querySelectorAll('.ag-remove-icon-btn').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
+      e.preventDefault();
       const id = (e.currentTarget as HTMLElement).dataset.accountId;
       if (!id) return;
 
