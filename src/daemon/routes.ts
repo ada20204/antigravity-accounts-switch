@@ -78,6 +78,7 @@ function buildLoginTerminalScript(port: number, daemonToken: string): string {
   return [
     '#!/bin/bash',
     'set -o pipefail',
+    'trap \'rm -f "$0"\' EXIT',
     'echo "=== Add a new Antigravity account ==="',
     'echo',
     'echo "Step 1/3: re-saving your current account..."',

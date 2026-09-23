@@ -269,11 +269,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const server = http.createServer(async (req, res) => {
     const origin = req.headers.origin;
     const allowed = isAllowedOrigin(origin);
-    if (requiresDaemonToken(req.method, req.url) && req.headers[DAEMON_TOKEN_HEADER] !== daemonToken) {
-      log('REQ', req.method, req.url, `origin=${origin ?? '(none)'}`, 'REJECTED (daemon token)');
-      respondError(res, 401, 'Daemon authentication required');
-      return;
-    }
 
     // Rejects outright rather than just reflecting the header — see
     // isAllowedOrigin() in httpUtils.ts and docs/decisions/cors-allowlist-policy.md.
@@ -288,6 +283,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', DAEMON_CORS_ALLOWED_HEADERS);
+
+    if (requiresDaemonToken(req.method, req.url) && req.headers[DAEMON_TOKEN_HEADER] !== daemonToken) {
+      log('REQ', req.method, req.url, `origin=${origin ?? '(none)'}`, 'REJECTED (daemon token)');
+      respondError(res, 401, 'Daemon authentication required');
+      return;
+    }
 
     log('REQ', req.method, req.url, `origin=${origin ?? '(none)'}`, `corsAllowed=${allowed}`);
 

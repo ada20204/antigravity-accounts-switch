@@ -136,7 +136,18 @@ export class SemanticLocator {
     let foundEmail: string | null = null;
     let foundPlan: string | null = null;
 
-    const leaves = Array.from(document.querySelectorAll<HTMLElement>('div, span, p'));
+    // Fast bail-out: Settings metadata only exists when Settings or Quota elements are present in DOM.
+    // Prevents running full DOM querySelectorAll on every mutation during typing or LLM streaming.
+    const settingsRoot = document.querySelector<HTMLElement>(
+      '.settings-standalone, [class*="settings"], [data-testid*="settings"]'
+    );
+    const hasQuotaRings = Boolean(document.querySelector('[data-testid="quota-progress-circle"]'));
+    if (!settingsRoot && !hasQuotaRings) {
+      return { email: null, plan: null };
+    }
+
+    const searchScope = settingsRoot ?? document.body;
+    const leaves = Array.from(searchScope.querySelectorAll<HTMLElement>('div, span, p'));
     for (const el of leaves) {
       if (!foundEmail) {
         const text = leafEmailText(el);

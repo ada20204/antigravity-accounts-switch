@@ -27,16 +27,17 @@ export function escapeHtml(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, (ch) => HTML_ESCAPES[ch]);
 }
 
+export type AccountTier = 'Ultra' | 'Pro' | 'Free';
+
 /**
  * Simplifies verbose Antigravity tier descriptions into standard clean badges: Free, Pro, Ultra.
+ * Enforces a strict whitelist to prevent attribute injection or unescaped class names.
  */
-export function simplifyTier(tier?: string | null): string {
+export function simplifyTier(tier?: string | null): AccountTier {
   if (!tier || tier === 'Unknown') return 'Free';
   const t = tier.trim();
   if (/ultra/i.test(t)) return 'Ultra';
   if (/pro/i.test(t)) return 'Pro';
-  if (/free|starter/i.test(t)) return 'Free';
-  const clean = t.replace(/^(Antigravity|Google AI)\s+/i, '').trim();
-  return clean || 'Free';
+  return 'Free';
 }
 

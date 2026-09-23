@@ -119,14 +119,15 @@ async function readHubSpec(pid: number): Promise<HubSpec | null> {
 }
 
 async function probeHubHealth(port: number): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 1000);
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 1000);
     const res = await fetch(`http://127.0.0.1:${port}/`, { signal: controller.signal });
-    clearTimeout(timer);
     return res.status >= 200 && res.status < 500;
   } catch {
     return false;
+  } finally {
+    clearTimeout(timer);
   }
 }
 

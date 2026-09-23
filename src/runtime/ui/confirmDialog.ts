@@ -36,17 +36,34 @@ function buildOverlay(message: string, title?: string): { overlay: HTMLElement; 
   return { overlay, actions };
 }
 
+// Central stack for active dialogs so only the top-most modal receives Enter/Escape
+interface ActiveModal {
+  overlay: HTMLElement;
+  handleKey: (e: KeyboardEvent) => void;
+}
+
+const activeModals: ActiveModal[] = [];
+
+function onGlobalKeydown(e: KeyboardEvent) {
+  if (activeModals.length === 0) return;
+  const topModal = activeModals[activeModals.length - 1];
+  topModal.handleKey(e);
+}
+
+document.addEventListener('keydown', onGlobalKeydown, true);
+
 export function showConfirm(message: string, options?: ConfirmOptions): Promise<boolean> {
   return new Promise(resolve => {
     const { overlay, actions } = buildOverlay(message, options?.title);
 
     function close(result: boolean) {
-      document.removeEventListener('keydown', onKey);
+      const idx = activeModals.findIndex(m => m.overlay === overlay);
+      if (idx !== -1) activeModals.splice(idx, 1);
       overlay.remove();
       resolve(result);
     }
 
-    function onKey(e: KeyboardEvent) {
+    function handleKey(e: KeyboardEvent) {
       if (e.key === 'Escape') {
         e.preventDefault();
         close(false);
@@ -55,7 +72,8 @@ export function showConfirm(message: string, options?: ConfirmOptions): Promise<
         close(true);
       }
     }
-    document.addEventListener('keydown', onKey);
+
+    activeModals.push({ overlay, handleKey });
 
     const cancelBtn = document.createElement('button');
     cancelBtn.className = 'ag-confirm-btn ag-confirm-cancel';
@@ -82,18 +100,20 @@ export function showAlert(message: string, options?: { title?: string; okText?: 
     const { overlay, actions } = buildOverlay(message, options?.title);
 
     function close() {
-      document.removeEventListener('keydown', onKey);
+      const idx = activeModals.findIndex(m => m.overlay === overlay);
+      if (idx !== -1) activeModals.splice(idx, 1);
       overlay.remove();
       resolve();
     }
 
-    function onKey(e: KeyboardEvent) {
+    function handleKey(e: KeyboardEvent) {
       if (e.key === 'Escape' || e.key === 'Enter') {
         e.preventDefault();
         close();
       }
     }
-    document.addEventListener('keydown', onKey);
+
+    activeModals.push({ overlay, handleKey });
 
     const okBtn = document.createElement('button');
     okBtn.className = 'ag-confirm-btn ag-confirm-ok';
@@ -108,3 +128,4 @@ export function showAlert(message: string, options?: { title?: string; okText?: 
     document.body.appendChild(overlay);
   });
 }
+

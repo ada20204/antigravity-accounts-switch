@@ -114,17 +114,22 @@ export function renderOrDefer(key: HTMLElement, fn: () => void): void {
 }
 
 /**
- * 包装异步点击操作：提供临时的半透明遮罩与指针防重复点击保护，操作结束后自动恢复。
+ * 包装异步点击操作：提供半透明遮罩、指针防重击及键盘 Focus 隔离 (inert)，操作结束后自动恢复。
  */
 export async function withActionPending<T>(element: HTMLElement, action: () => Promise<T>): Promise<T> {
   const originalOpacity = element.style.opacity;
   element.style.opacity = '0.5';
   element.style.pointerEvents = 'none';
+  const hadInert = element.hasAttribute('inert');
+  element.setAttribute('inert', '');
   try {
     return await action();
   } finally {
     element.style.opacity = originalOpacity;
     element.style.pointerEvents = '';
+    if (!hadInert) {
+      element.removeAttribute('inert');
+    }
   }
 }
 

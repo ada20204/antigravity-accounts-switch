@@ -315,7 +315,7 @@ function renderSettingsCard(card: HTMLElement, force = false) {
             <div class="ag-sub-box-ident">
               <span class="ag-dot" style="background:${acc.color};"></span>
               <span class="ag-sub-box-name" title="${escapeHtml(acc.name)}">${escapeHtml(acc.name)}</span>
-              <span class="ag-tier-badge ${tierClass}">${escapeHtml(tier)}</span>
+              <span class="ag-tier-badge ${escapeHtml(tierClass)}">${escapeHtml(tier)}</span>
             </div>
 
             <div class="ag-quota-col" title="Gemini&#10;外环(周配额): ${acc.geminiWeekly != null ? acc.geminiWeekly + '%' : '无'}&#10;内环(5h配额): ${acc.gemini5h != null ? acc.gemini5h + '%' : '无'}">

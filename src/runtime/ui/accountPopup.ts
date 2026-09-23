@@ -95,7 +95,7 @@ function renderPopupContent(container: HTMLElement) {
             <div class="ag-switch-sub-info">
               <div class="ag-switch-sub-name">
                 <span class="ag-name-text">${escapeHtml(acc.name)}</span>
-                <span class="ag-tier-badge ${tierClass}">${escapeHtml(tier)}</span>
+                <span class="ag-tier-badge ${escapeHtml(tierClass)}">${escapeHtml(tier)}</span>
               </div>
               <div class="ag-switch-sub-dots">${acc.issue ? `<span style="color:#ef4444;font-size:10px;">${escapeHtml(acc.issue)}</span>` : acc.tokenMask}</div>
             </div>
