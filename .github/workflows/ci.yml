@@ -8,9 +8,6 @@ on:
 
 jobs:
   build-and-test:
-    # Nothing here actually touches the macOS Keychain — test/accounts.test.mjs
-    # replaces `security` with a fake Node script (see AGENT_HUB_ACCOUNTS_TEST_SECURITY_BIN
-    # in src/daemon/accounts/keychain.ts), so this runs fine on Linux.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,12 +17,23 @@ jobs:
           node-version: 20
           cache: npm
 
-      - run: npm ci
+      - name: Install dependencies
+        run: npm ci
 
-      - run: npm run typecheck
+      - name: Typecheck
+        run: npm run typecheck
 
-      - run: npm test
+      - name: Run tests
+        run: npm test
 
-      - run: npm run build:runtime
+      - name: Build runtime
+        run: npm run build:runtime
 
-      - run: npm run package
+      - name: Package VSIX
+        run: npm run package
+
+      - name: Upload VSIX Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vsix-package
+          path: '*.vsix'
