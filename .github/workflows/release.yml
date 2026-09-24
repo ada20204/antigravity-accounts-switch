@@ -69,3 +69,18 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish to Visual Studio Marketplace
+        if: "${{ env.VSCE_PAT != '' }}"
+        run: |
+          echo "Publishing to Visual Studio Code Marketplace..."
+          npx @vscode/vsce publish --no-dependencies -p "$VSCE_PAT"
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+
+      - name: Marketplace PAT Notice
+        if: "${{ env.VSCE_PAT == '' }}"
+        run: |
+          echo "::notice title=Marketplace Skipped::VSCE_PAT secret is not configured in GitHub repository. Add VSCE_PAT in repository Settings -> Secrets and variables -> Actions to enable automated Marketplace publishing."
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}

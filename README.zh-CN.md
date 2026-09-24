@@ -1,16 +1,47 @@
 # Antigravity Accounts Switch
 
 <p align="center">
-  <strong>专为 Google Antigravity 打造的多账号管理与配额看板增强插件</strong>
+  <strong>专为 Google Antigravity 打造的多账号管理与配额看板增强插件</strong><br>
+  <em>非官方社区增强扩展</em>
 </p>
 
 <p align="center">
-  <strong>简体中文</strong> | <a href="./README.md">English</a>
+  <a href="https://marketplace.visualstudio.com/items?itemName=174c39a3-faa3-63fd-8133-ee3abd1e2a01.antigravity-accounts-switch">
+    <img src="https://img.shields.io/visual-studio-marketplace/v/174c39a3-faa3-63fd-8133-ee3abd1e2a01.antigravity-accounts-switch?label=Marketplace&logo=visual-studio-code" alt="Visual Studio Marketplace Version" />
+  </a>
+  <a href="https://github.com/ada20204/antigravity-accounts-switch/releases">
+    <img src="https://img.shields.io/github/v/release/ada20204/antigravity-accounts-switch?label=Release" alt="GitHub Release" />
+  </a>
+  <a href="./LICENSE">
+    <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" />
+  </a>
+</p>
+
+<p align="center">
+  <strong>简体中文文档</strong> | <a href="./README.md">English Documentation</a>
 </p>
 
 ---
 
+> [!NOTE]
+> **免责声明**：*Antigravity Accounts Switch* 为独立的第三方开源社区工具，**非** Google LLC 或 Alphabet Inc. 官方产品，亦未与 Google 存在任何附属、赞助或官方背书关系。“Google” 与 “Antigravity” 均为 Google LLC 的商标。
+
 专为 Google Antigravity（VS Code 插件）打造的多账号管理与配额看板增强插件。提供多账号无缝切换、同心环配额看板、状态栏实时监控、邮箱脱敏、凭据导入导出以及官方扩展启动超时自愈保护。
+
+---
+
+## ⚡ 前置准备
+
+为使本插件的本地守护进程能够安全连接至 Antigravity 界面沙箱（无需对系统核心文件进行破坏性篡改）：
+
+1. 请确保已安装官方 **Google Antigravity** 扩展。
+2. 启动 VS Code 时附带 CDP 调试端口参数：
+   ```bash
+   code --remote-debugging-port=9222
+   ```
+   *（提示：可将 `--remote-debugging-port=9222` 配置在桌面快捷方式启动参数或终端别名中）。*
+
+---
 
 ## 🌟 核心特性
 
@@ -88,6 +119,6 @@
 
 ---
 
-## 📄 开源与协议 (License)
+## 📄 开源协议
 
-MIT License. Designed with ❤️ for Google Antigravity users.
+[MIT License](./LICENSE)。Designed with ❤️ for Google Antigravity users.

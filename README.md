@@ -1,16 +1,47 @@
 # Antigravity Accounts Switch
 
 <p align="center">
-  <strong>Multi-account Switcher & Real-time Quota Dashboard for Google Antigravity</strong>
+  <strong>Multi-account Switcher & Real-time Quota Dashboard for Google Antigravity</strong><br>
+  <em>An unofficial community enhancement extension</em>
 </p>
 
 <p align="center">
-  <a href="./README.zh-CN.md">简体中文</a> | <strong>English</strong>
+  <a href="https://marketplace.visualstudio.com/items?itemName=174c39a3-faa3-63fd-8133-ee3abd1e2a01.antigravity-accounts-switch">
+    <img src="https://img.shields.io/visual-studio-marketplace/v/174c39a3-faa3-63fd-8133-ee3abd1e2a01.antigravity-accounts-switch?label=Marketplace&logo=visual-studio-code" alt="Visual Studio Marketplace Version" />
+  </a>
+  <a href="https://github.com/ada20204/antigravity-accounts-switch/releases">
+    <img src="https://img.shields.io/github/v/release/ada20204/antigravity-accounts-switch?label=Release" alt="GitHub Release" />
+  </a>
+  <a href="./LICENSE">
+    <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" />
+  </a>
+</p>
+
+<p align="center">
+  <a href="./README.zh-CN.md">简体中文文档</a> | <strong>English Documentation</strong>
 </p>
 
 ---
 
-A powerful enhancement extension for Google Antigravity in VS Code. Provides seamless multi-account switching, an embedded quota dashboard with concentric progress rings, real-time status bar monitoring, privacy masking, credential export/import, and official startup timeout auto-repair.
+> [!NOTE]
+> **Disclaimer**: *Antigravity Accounts Switch* is an independent, open-source community extension. It is **not** an official product of Google LLC or Alphabet Inc., nor is it affiliated with, sponsored by, or endorsed by Google. "Google" and "Antigravity" are trademarks of Google LLC.
+
+A powerful productivity enhancement for developers using Google Antigravity in VS Code. It provides seamless multi-account switching, an embedded quota dashboard with concentric progress rings, real-time status bar monitoring, privacy masking, credential export/import, and startup timeout auto-repair.
+
+---
+
+## ⚡ Prerequisites
+
+To allow the extension's local daemon to connect safely to Antigravity's interface sandbox via Chrome DevTools Protocol without modifying system core files:
+
+1. Ensure the official **Google Antigravity** extension is installed.
+2. Launch VS Code with the debugging port enabled:
+   ```bash
+   code --remote-debugging-port=9222
+   ```
+   *(Tip: You can add `--remote-debugging-port=9222` to your desktop shortcut or shell alias).*
+
+---
 
 ## 🌟 Key Features
 
@@ -90,4 +121,4 @@ Configure via VS Code Settings (`Ctrl+,` / `Cmd+,`) by searching `antigravityAcc
 
 ## 📄 License
 
-MIT License. Designed with ❤️ for Google Antigravity users.
+[MIT License](./LICENSE). Designed with ❤️ for Google Antigravity users.

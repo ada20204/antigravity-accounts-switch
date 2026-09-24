@@ -4,7 +4,23 @@
   "icon": "assets/icon.png",
   "version": "1.2.0",
   "description": "Multi-account switcher and Settings quota dashboard for Google Antigravity",
-  "publisher": "local",
+  "publisher": "174c39a3-faa3-63fd-8133-ee3abd1e2a01",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ada20204/antigravity-accounts-switch.git"
+  },
+  "homepage": "https://github.com/ada20204/antigravity-accounts-switch#readme",
+  "bugs": {
+    "url": "https://github.com/ada20204/antigravity-accounts-switch/issues"
+  },
+  "keywords": [
+    "antigravity",
+    "google-antigravity",
+    "multi-account",
+    "account-switcher",
+    "quota"
+  ],
   "main": "out/daemon/extension.js",
   "engines": {
     "vscode": "^1.90.0",
@@ -60,7 +76,8 @@
     "typecheck": "tsc --noEmit",
     "compile": "rm -rf out && tsc -p tsconfig.extension.json",
     "vscode:prepublish": "npm run compile && npm run build:runtime",
-    "package": "vsce package --no-dependencies --no-rewrite-relative-links --allow-missing-repository --skip-license",
+    "package": "vsce package --no-dependencies --no-rewrite-relative-links",
+    "publish": "vsce publish --no-dependencies",
     "patch": "node scripts/patch.mjs",
     "unpatch": "node scripts/unpatch.mjs",
     "test": "npm run compile && node --test test/*.test.mjs"
