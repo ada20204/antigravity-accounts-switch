@@ -28,6 +28,7 @@ export interface CredentialPort {
   isolatedCredentialConflictCount(accountId: string): number;
   exportProfile(accountId: string): StoredCredentialV3 | null;
   importProfile(accountId: string, profile: unknown): void;
+  syncActiveTokens(): void;
 }
 
 export class CredentialStore implements CredentialPort {
@@ -106,5 +107,11 @@ export class CredentialStore implements CredentialPort {
 
   importProfile(accountId: string, profile: unknown): void {
     this.repository.import(accountId, profile);
+  }
+
+  syncActiveTokens(): void {
+    if (typeof this.active.syncActiveTokens === "function") {
+      this.active.syncActiveTokens();
+    }
   }
 }

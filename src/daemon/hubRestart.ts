@@ -11,6 +11,7 @@ import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import { log } from './logger';
 import { type CdpTarget, listCdpTargets, CDP_HTTP_BASE as CDP_BASE } from './cdpClient';
+import { keychain } from './accounts';
 
 const execAsync = promisify(exec);
 const GRACEFUL_EXIT_TIMEOUT_MS = 5000;
@@ -560,6 +561,11 @@ export async function restartAntigravityHub(
     }
 
     if (spec) {
+      try {
+        if (keychain.activeAvailable()) {
+          keychain.syncActiveTokens();
+        }
+      } catch {}
       const spawned = await spawnHubOnSamePort(spec);
       if (spawned) {
         const tHealthy = Date.now();

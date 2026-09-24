@@ -205,6 +205,16 @@ process.exit(2);
   assert.equal(agyContent.refresh_token, 'refresh-a');
   assert.equal(jetskiContent.refresh_token, 'refresh-a');
 
+  // Proactive token sync must restore/synchronize token files from active keychain
+  fs.unlinkSync(jetskiToken);
+  assert.equal(fs.existsSync(jetskiToken), false, 'hub jetski token unlinked for test');
+  harness(`
+    const { keychain } = require(${JSON.stringify(compiledIndex)});
+    keychain.syncActiveTokens();
+    console.log(JSON.stringify({ ok: true }));
+  `, tokenSyncEnv);
+  assert.ok(fs.existsSync(jetskiToken), 'hub jetski session token must be restored by syncActiveTokens');
+
   // Detaching active login must remove both token files
   harness(`
     const { keychain } = require(${JSON.stringify(compiledIndex)});

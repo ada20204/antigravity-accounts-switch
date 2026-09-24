@@ -34,6 +34,7 @@ export interface ActiveCredentialDriver {
   read(): string;
   write(secret: string): void;
   remove(): void;
+  syncActiveTokens?(): void;
 }
 
 function unavailable(message: string): AccountStateError {
@@ -158,6 +159,31 @@ export class MacCredentialDriver implements ActiveCredentialDriver {
         if (fs.lstatSync(filePath).isSymbolicLink()) throw unavailable("token file is unsafe");
         fs.unlinkSync(filePath);
       }
+    }
+  }
+
+  syncActiveTokens(): void {
+    if (!this.hasCredential()) {
+      if (this.hubTokenPath && fs.existsSync(this.hubTokenPath)) {
+        try { fs.unlinkSync(this.hubTokenPath); } catch {}
+      }
+      return;
+    }
+    try {
+      const secret = this.read();
+      const tokenJson = this.standaloneToken(secret);
+      const parsed = JSON.parse(tokenJson);
+      const expiry = parsed?.token?.expiry;
+      if (expiry && new Date(expiry).getTime() <= Date.now()) {
+        if (this.hubTokenPath && fs.existsSync(this.hubTokenPath)) {
+          try { fs.unlinkSync(this.hubTokenPath); } catch {}
+        }
+        return;
+      }
+      this.syncSingleTokenFile(this.tokenPath, tokenJson);
+      this.syncSingleTokenFile(this.hubTokenPath, tokenJson);
+    } catch {
+      // Best-effort
     }
   }
 }
@@ -353,6 +379,21 @@ export class LinuxFileCredentialDriver implements ActiveCredentialDriver {
         this.checkedTokenFile(p);
         fs.unlinkSync(p);
       }
+    }
+  }
+
+  syncActiveTokens(): void {
+    if (!this.hasCredential()) {
+      if (this.hubTokenPath && fs.existsSync(this.hubTokenPath)) {
+        try { fs.unlinkSync(this.hubTokenPath); } catch {}
+      }
+      return;
+    }
+    try {
+      const secret = this.read();
+      this.write(secret);
+    } catch {
+      // Best-effort
     }
   }
 }
