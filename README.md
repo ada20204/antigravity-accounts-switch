@@ -1,19 +1,93 @@
 # Antigravity Accounts Switch
 
-给 Google Antigravity(VS Code 扩展)注入的多账号增强插件:左下角账号面板 + Settings 页配额卡片,一键在多个已连接的 Google 账号间切换、添加新账号、查看各账号的配额和等级、导出/导入账号数据。
+<p align="center">
+  <strong>Multi-account Switcher & Real-time Quota Dashboard for Google Antigravity</strong>
+</p>
 
-## 组成
+<p align="center">
+  <a href="./README.zh-CN.md">简体中文</a> | <strong>English</strong>
+</p>
 
-- `src/daemon/` —— 本地 HTTP 桥接服务,跑在 Antigravity 自己的 extension host 进程里(`extension.ts` 的 `activate()`),不是独立进程;每个 VS Code 窗口各自的实例在 63820-63829 里自动挑一个空闲端口。账号管理核心(`accounts/`)是 vendor 自 [`agent-hub-accounts`](../agent-hub-accounts) 的代码,不再依赖外部 CLI;同时管理 Antigravity 的 `agy --hub` 进程生命周期(按窗口的 workspace folder 过滤,只管自己那份)。
-- `src/runtime/` —— 注入进 Antigravity webview 的前端代码(CDP 注入,非常规 `<script src>`,页面 CSP 封死了那条路)。
-- `scripts/` —— bridge.js 的 patch/unpatch(历史方案,已被 CDP 注入取代)、Keychain 诊断脚本。
+---
 
-## 运行前提
+A powerful enhancement extension for Google Antigravity in VS Code. Provides seamless multi-account switching, an embedded quota dashboard with concentric progress rings, real-time status bar monitoring, privacy masking, credential export/import, and official startup timeout auto-repair.
 
-装好 `.vsix`(Antigravity 里 "Install from VSIX")之后,不再需要手动开 Terminal、装 LaunchAgent 或另开 Vite——装/更新/重载扩展本身就是重启 daemon。唯一剩下的前提:VS Code 要开着 CDP 端口 9222(注入依赖它,页面 CSP 封死了常规 `<script src>`)。原因和其余细节见 [`docs/README.md`](./docs/README.md)。
+## 🌟 Key Features
 
-改这个项目本身的代码时(而不是只是用它),`npm run dev`(Vite)+ VS Code 的 "Reload Window" 仍是主要的迭代方式,见 `docs/README.md` 的"开工前"一节。
+### 1. ⚡ Instant Multi-Account Switching
+- **Multiple Quick Access Points**: Switch accounts effortlessly with one click from either the bottom-left account popup or the embedded quota dashboard in Models / Settings.
+- **Generation Interruption Guard**: Confirmation modal warns about active generation tasks before switching, preventing accidental context loss.
+- **Smooth Session Reload**: Seamlessly hot-reloads Antigravity with target credentials without needing manual browser sign-in reauthorization.
 
-## 文档
+### 2. 📊 Embedded Quota Dashboard
+- **Native-Look Integration**: Deeply embedded directly in the Models / Settings page, adhering to Antigravity's native design aesthetics.
+- **Concentric Quota Rings**:
+  - **Outer Ring**: Gemini 5h / Weekly quota percentage remaining.
+  - **Inner Ring**: Claude 3.5 Sonnet & GPT 5h / Weekly quota percentage remaining.
+  - **Dynamic Colors**: Color-coded indicators (Green, Blue, Orange, Red) reflect quota health in real time.
+- **Multi-Column Sorting**: Click column headers (Account Tier Ultra → Pro → Free, Gemini Quota, Claude Quota) to stack priority and toggle ascending/descending order.
+- **Check All Accounts**: Quickly switches through all saved accounts sequentially to refresh true server quotas.
+- **Adaptive Responsive Layout**: Intelligently switches between full dashboard view and compact mode across different sidebar widths, avoiding layout jitter.
 
-详细的运行流程、设计取舍和历史记录见 [`docs/README.md`](./docs/README.md)——先看那份索引,再决定翻哪一份。
+### 3. 🛡️ Privacy & Email Masking
+- **One-Click Masking Toggle**: Easily toggle email desensitization (e.g. `myaccount@gmail.com` displays as `mya***nt@gmail.com`).
+- **End-to-End Privacy Protection**: Popup list, Models dashboard, status bar, confirmation modals, and progress overlays all respect the masking setting—ideal for screen recording, presentations, and screenshots.
+
+### 4. 🌐 Seamless Bilingual Support (i18n)
+- **One-Click Language Switch**: Toggle between English (EN) and Simplified Chinese (ZH) instantly in the account popup.
+- **Full Localization**: Every label, table header, tooltip, confirmation dialog, progress message, and error alert is fully localized.
+
+### 5. 🚀 Real-time Status Bar Monitor
+- **Persistent Status**: View current active account, tier, and remaining quota directly in the VS Code status bar.
+- **Rich Markdown Tooltip**: Hover over the status bar item to inspect detailed Gemini and 3rd-party model quotas, tiers, and any account issues.
+
+### 6. 📦 Credential Backup & Migration (Export & Import)
+- **Export Accounts**: Back up all connected account profiles and credentials to a single JSON file.
+- **Import Accounts**: Quickly restore credentials on a secondary machine or fresh environment without repeating Google OAuth.
+
+### 7. 🔧 Official Extension Timeout Protection
+- **Startup Auto-Patch**: Automatically extends the official `google.google-antigravity` extension's launch timeout from 15s to 60s, preventing `[LAUNCH ERROR] Timed out waiting for server` errors during slow cold starts.
+
+---
+
+## 📖 Usage Guide
+
+### Adding a New Account
+1. Click the Antigravity account avatar in the bottom-left corner to open the switcher popup.
+2. Click **“Add new account”** and confirm the prompt (your current account is safely retained locally).
+3. Complete the Google OAuth sign-in flow following Antigravity's standard instructions.
+4. Once signed in, the extension automatically detects and stores the new account.
+
+### Switching Accounts
+- **Option 1**: Click the bottom-left avatar and click **“Switch”** next to any saved account.
+- **Option 2**: In Antigravity's Models / Settings page, click **“Switch”** on any account row in the dashboard.
+
+### Sorting & Quota Inspection
+- Click **“Account / Tier”**, **“Gemini”**, or **“Claude & GPT”** in the dashboard header to sort. Click repeatedly to toggle order or combine priorities.
+- Click **“Reset”** to return to default account order.
+- Click **“Check All Accounts”** to run an automated quota check across all accounts.
+
+---
+
+## ⚙️ Extension Settings
+
+Configure via VS Code Settings (`Ctrl+,` / `Cmd+,`) by searching `antigravityAccountsSwitch`:
+
+| Setting | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `antigravityAccountsSwitch.maskEmails` | `boolean` | `true` | Desensitize and mask account email addresses in the UI and status bar. |
+| `antigravityAccountsSwitch.language` | `string` | `"zh"` | Display language for the UI and notifications (`"zh"`: Chinese, `"en"`: English). |
+| `antigravityAccountsSwitch.verboseLogging` | `boolean` | `false` | Output verbose debug log lines to the Output Channel. |
+
+---
+
+## 🔒 Security & Privacy
+
+- **100% Local Storage**: All account tokens and quota data remain strictly on your local machine. No data is ever sent to third-party servers.
+- **Credentials Safety**: Exported backup files contain authentication tokens. Keep them confidential.
+
+---
+
+## 📄 License
+
+MIT License. Designed with ❤️ for Google Antigravity users.
