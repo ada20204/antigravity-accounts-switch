@@ -102,3 +102,30 @@ export function simplifyTier(tier?: string | null): AccountTier {
   return 'Free';
 }
 
+/**
+ * Desensitizes an email address or username for privacy display.
+ * Retains first 3 chars and last 2 chars (or 1/1 for short strings),
+ * masking the center with '***'.
+ */
+export function maskEmail(str: string | null | undefined, masked: boolean = true): string {
+  if (!masked || !str) return str ?? '';
+  const atIndex = str.indexOf('@');
+  if (atIndex > 0) {
+    const user = str.slice(0, atIndex);
+    const domain = str.slice(atIndex);
+    return `${maskUsername(user)}${domain}`;
+  }
+  return maskUsername(str);
+}
+
+function maskUsername(user: string): string {
+  if (user.length <= 2) {
+    return `${user[0]}***`;
+  }
+  if (user.length <= 5) {
+    return `${user[0]}***${user.slice(-1)}`;
+  }
+  return `${user.slice(0, 3)}***${user.slice(-2)}`;
+}
+
+
