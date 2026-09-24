@@ -471,7 +471,7 @@ function renderSettingsCard(card: HTMLElement, force = false) {
     if (!result.ok) {
       await showAlert(`Export failed: ${result.error}`);
     } else {
-      await showAlert(t().exportSuccess(result.accounts, result.credentials));
+      await showAlert(t().exportSuccess(result.accounts ?? 0, result.credentials ?? 0));
     }
   });
 
