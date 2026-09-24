@@ -1,6 +1,8 @@
 // Replaces window.confirm()/alert(), which silently no-op in the VS Code
 // webview sandbox — see docs/decisions/webview-confirm-alert-silent-failure.md.
 
+import { t } from './i18n';
+
 export interface ConfirmOptions {
   title?: string;
   okText?: string;
@@ -77,12 +79,12 @@ export function showConfirm(message: string, options?: ConfirmOptions): Promise<
 
     const cancelBtn = document.createElement('button');
     cancelBtn.className = 'ag-confirm-btn ag-confirm-cancel';
-    cancelBtn.textContent = options?.cancelText || '取消';
+    cancelBtn.textContent = options?.cancelText || t().cancel;
     cancelBtn.addEventListener('click', () => close(false));
 
     const okBtn = document.createElement('button');
     okBtn.className = `ag-confirm-btn ag-confirm-ok${options?.isDanger ? ' ag-confirm-danger' : ''}`;
-    okBtn.textContent = options?.okText || '确定';
+    okBtn.textContent = options?.okText || t().ok;
     okBtn.addEventListener('click', () => close(true));
 
     actions.appendChild(cancelBtn);
@@ -117,7 +119,7 @@ export function showAlert(message: string, options?: { title?: string; okText?: 
 
     const okBtn = document.createElement('button');
     okBtn.className = 'ag-confirm-btn ag-confirm-ok';
-    okBtn.textContent = options?.okText || '知道了';
+    okBtn.textContent = options?.okText || t().ok;
     okBtn.addEventListener('click', close);
 
     actions.appendChild(okBtn);

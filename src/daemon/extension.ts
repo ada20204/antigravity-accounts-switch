@@ -20,6 +20,8 @@ import { loadJsonFile, saveJsonFile } from './jsonStore';
 import { createApiRouter, PENDING_ADD_SCHEMA, type PendingAdd, type RouteState } from './routes';
 import { createTransferRouter } from './transferRoutes';
 import { createStatusBarManager } from './statusBar';
+import { keychain } from './accounts';
+import { patchOfficialExtensionTimeout } from './patcher/officialPatcher';
 
 // This window's own daemon port — allocated in activate(), not a fixed
 // constant any more (a second window's extension host would hit EADDRINUSE
@@ -195,6 +197,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const verboseLogging = vscode.workspace.getConfiguration('antigravityAccountsSwitch').get<boolean>('verboseLogging', false);
   configureLogger(outputChannel, verboseLogging);
 
+  try {
+    keychain.syncActiveTokens();
+  } catch (err: any) {
+    log('BOOT', 'token sync skipped or failed', err?.message ?? String(err));
+  }
+
+  try {
+    patchOfficialExtensionTimeout();
+  } catch (err: any) {
+    log('BOOT', 'official extension patch skipped or failed', err?.message ?? String(err));
+  }
+
   setOwnWorkspacePaths((vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath));
 
   // Tried wiring setWindowReloadFn() here; reverted as unsafe — see
@@ -366,12 +380,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     })
   );
 
-  statusBarManager = createStatusBarManager(context, state, async () => {
-    const cli = path.join(__dirname, 'accounts', 'loginCli.js');
-    const terminal = vscode.window.createTerminal({ name: 'Antigravity Account Sign-in' });
-    terminal.show(false);
-    terminal.sendText(`node "${cli}" login`);
-  });
+  statusBarManager = createStatusBarManager(context, state);
   context.subscriptions.push({ dispose: () => statusBarManager?.dispose() });
 
   const stopInjector = startCdpInjectorLoop(state.port, daemonToken);

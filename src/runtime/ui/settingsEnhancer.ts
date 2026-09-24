@@ -3,6 +3,8 @@ import { SemanticLocator } from '../adapters/semanticLocator';
 import { showConfirm, showAlert } from './confirmDialog';
 import { bindUntilRemoved, unbind, shouldSkipRender, renderOrDefer, withActionPending } from './renderGuard';
 import { escapeHtml, simplifyTier } from '../adapters/domUtils';
+import { renderConcentricRing } from './quotaRing';
+import { t, getLang, getMaskEmails, maskEmail } from './i18n';
 
 // bindUntilRemoved dedups by element reference — it only replaces a binding
 // made on the SAME element. A Settings tab switch destroys our card and the
@@ -43,9 +45,22 @@ export function injectSettingsEnhancements() {
       // it, so the NEXT tick builds a brand-new element here — a different
       // bindUntilRemoved key, which is exactly why lastBoundCard exists: it
       // explicitly retires the previous element's binding first.
-      if (lastBoundCard) unbind(lastBoundCard);
+      if (lastBoundCard) {
+        unbind(lastBoundCard);
+        if (activeResizeObserver) {
+          activeResizeObserver.disconnect();
+          activeResizeObserver = null;
+        }
+        if (activeRafId !== null) {
+          cancelAnimationFrame(activeRafId);
+          activeRafId = null;
+        }
+      }
+      setupResponsiveObserver(card);
       const cardRef = card;
       bindUntilRemoved(cardRef, 'ag-account-changed', () => renderOrDefer(cardRef, () => renderSettingsCard(cardRef)));
+      bindUntilRemoved(cardRef, 'ag-lang-changed', () => renderOrDefer(cardRef, () => renderSettingsCard(cardRef, true)));
+      bindUntilRemoved(cardRef, 'ag-mask-changed', () => renderOrDefer(cardRef, () => renderSettingsCard(cardRef, true)));
       lastBoundCard = cardRef;
     } else if (card.parentElement !== container || container.lastElementChild !== card) {
       // Re-append only when it isn't already in place — appendChild always
@@ -63,59 +78,6 @@ export function injectSettingsEnhancements() {
   document.getElementById('ag-settings-nav-item')?.remove();
 }
 
-function getQuotaColor(percent: number | null | undefined): string {
-  if (percent == null) return '#6b7280';
-  if (percent < 20) return '#ef4444';
-  if (percent < 50) return '#f59e0b';
-  return '#22c55e';
-}
-
-function renderConcentricRing(options: {
-  fiveHour: number | null | undefined;
-  weekly: number | null | undefined;
-  issue?: string | null;
-  label: string;
-}): string {
-  const { fiveHour, weekly, issue, label } = options;
-  const hasIssue = Boolean(issue);
-  const fiveHVal = hasIssue ? 0 : fiveHour;
-  const weeklyVal = hasIssue ? 0 : weekly;
-
-  const weeklyClamped = weeklyVal != null ? Math.max(0, Math.min(100, weeklyVal)) : null;
-  const fiveHClamped = fiveHVal != null ? Math.max(0, Math.min(100, fiveHVal)) : null;
-
-  // Outer ring (Weekly): R=16, stroke-width=3. C = 2 * PI * 16 ≈ 100.53
-  const outerR = 16;
-  const outerC = 2 * Math.PI * outerR;
-  const outerOffset = weeklyClamped != null ? outerC * (1 - weeklyClamped / 100) : outerC;
-  const outerColor = hasIssue ? '#ef4444' : getQuotaColor(weeklyClamped);
-
-  // Inner ring (5h): R=11, stroke-width=3. C = 2 * PI * 11 ≈ 69.12
-  const innerR = 11;
-  const innerC = 2 * Math.PI * innerR;
-  const innerOffset = fiveHClamped != null ? innerC * (1 - fiveHClamped / 100) : innerC;
-  const innerColor = hasIssue ? '#ef4444' : getQuotaColor(fiveHClamped);
-
-  const tooltip = `${label}\n外环(周配额): ${weeklyVal != null ? weeklyVal + '%' : '无'}\n内环(5h配额): ${fiveHVal != null ? fiveHVal + '%' : '无'}`;
-
-  return `
-    <svg class="ag-concentric-ring" viewBox="0 0 40 40" title="${escapeHtml(tooltip)}" aria-label="${escapeHtml(tooltip)}">
-      <!-- Outer Track (Weekly) -->
-      <circle class="ag-ring-track" cx="20" cy="20" r="${outerR}"></circle>
-      ${weeklyClamped != null ? `
-      <circle class="ag-ring-value" cx="20" cy="20" r="${outerR}"
-        style="stroke:${outerColor};stroke-dasharray:${outerC.toFixed(2)};stroke-dashoffset:${outerOffset.toFixed(2)};"></circle>
-      ` : ''}
-
-      <!-- Inner Track (5h) -->
-      <circle class="ag-ring-track" cx="20" cy="20" r="${innerR}" style="${fiveHClamped == null ? 'opacity:0.2;' : ''}"></circle>
-      ${fiveHClamped != null ? `
-      <circle class="ag-ring-value" cx="20" cy="20" r="${innerR}"
-        style="stroke:${innerColor};stroke-dasharray:${innerC.toFixed(2)};stroke-dashoffset:${innerOffset.toFixed(2)};"></circle>
-      ` : ''}
-    </svg>
-  `;
-}
 
 export type SortColumn = 'tier' | 'gemini' | 'claude';
 export type SortDirection = 'desc' | 'asc';
@@ -204,6 +166,87 @@ function handleHeaderSortClick(card: HTMLElement, col: SortColumn) {
   renderSettingsCard(card, true);
 }
 
+// Hysteresis thresholds for responsive compact mode:
+// Switching to compact requires width < COMPACT_ENTER_WIDTH (490px).
+// Switching to full requires width > COMPACT_EXIT_WIDTH (530px).
+// The 40px buffer zone prevents fluttering/jitter caused by scrollbar toggles (15px)
+// and padding shifts (8px).
+export const COMPACT_ENTER_WIDTH = 490;
+export const COMPACT_EXIT_WIDTH = 530;
+
+export function updateCompactMode(card: HTMLElement, width: number): boolean {
+  if (width <= 0) return false;
+  const wasCompact = card.classList.contains('ag-compact');
+  if (wasCompact && width > COMPACT_EXIT_WIDTH) {
+    card.classList.remove('ag-compact');
+    return true;
+  }
+  if (!wasCompact && width < COMPACT_ENTER_WIDTH) {
+    card.classList.add('ag-compact');
+    return true;
+  }
+  return false;
+}
+
+export function applyResponsiveMode(card: HTMLElement): void {
+  const inPopover = Boolean(card.closest('[role="dialog"], [role="menu"], [class*="popover"], [class*="flyout"], [class*="dropdown"], [class*="quick-input"]'));
+  card.classList.toggle('ag-in-popover', inPopover);
+
+  if (inPopover) {
+    card.classList.add('ag-compact');
+    return;
+  }
+
+  const currentWidth = card.getBoundingClientRect().width || card.parentElement?.clientWidth || 0;
+  if (currentWidth > 0) {
+    updateCompactMode(card, currentWidth);
+  }
+}
+
+let activeResizeObserver: ResizeObserver | null = null;
+let activeRafId: number | null = null;
+
+export function setupResponsiveObserver(card: HTMLElement): void {
+  if (typeof ResizeObserver === 'undefined' || card.dataset.hasResize) return;
+  card.dataset.hasResize = 'true';
+
+  if (activeResizeObserver) {
+    activeResizeObserver.disconnect();
+    activeResizeObserver = null;
+  }
+  if (activeRafId !== null) {
+    cancelAnimationFrame(activeRafId);
+    activeRafId = null;
+  }
+
+  activeResizeObserver = new ResizeObserver((entries) => {
+    for (const entry of entries) {
+      const width = entry.borderBoxSize?.[0]?.inlineSize
+        || (entry.target as HTMLElement).getBoundingClientRect().width
+        || entry.contentRect.width;
+
+      if (width > 0) {
+        if (activeRafId !== null) cancelAnimationFrame(activeRafId);
+        activeRafId = requestAnimationFrame(() => {
+          activeRafId = null;
+          if (!card.isConnected) return;
+          if (card.classList.contains('ag-in-popover')) {
+            card.classList.add('ag-compact');
+            return;
+          }
+          updateCompactMode(card, width);
+        });
+      }
+    }
+  });
+
+  try {
+    activeResizeObserver.observe(card, { box: 'border-box' });
+  } catch {
+    activeResizeObserver.observe(card);
+  }
+}
+
 // Re-renders only on a signature change (renderGuard's shouldSkipRender),
 // plus renderOrDefer at both call sites for real data landing mid-gesture —
 // see docs/decisions/2026-08-23-listener-leak-unconditional-rerender.md.
@@ -221,121 +264,109 @@ function renderSettingsCard(card: HTMLElement, force = false) {
   // sign-in round trip. See docs/decisions/2026-08-27-adopt-current-login.md.
   const currentLoginEmail = accounts.length === 0 ? SemanticLocator.findAccountPanelEmail() : null;
 
+  const currentLang = getLang();
+  const isMasked = getMaskEmails();
+
   const signature = JSON.stringify([
     currentSortCriteria,
     averagePercent,
     count,
     currentLoginEmail,
+    currentLang,
+    isMasked,
     accounts.map(a => [a.id, a.name, a.plan, a.quotaPercent, a.isActive, a.issue ?? '', a.geminiWeekly ?? '', a.gemini5h ?? '', a.threePWeekly ?? '', a.threeP5h ?? '']),
   ]);
   if (shouldSkipRender(card, signature, force)) return;
 
-  // Responsive mode detection: compact when container < 520px (e.g. Chat popover)
-  const initialWidth = card.clientWidth || card.parentElement?.clientWidth || 0;
-  if (initialWidth > 0) {
-    card.classList.toggle('ag-compact', initialWidth < 520);
-  }
-  const inPopover = Boolean(card.closest('[role="dialog"], [role="menu"], [class*="popover"], [class*="flyout"], [class*="dropdown"], [class*="quick-input"]'));
-  card.classList.toggle('ag-in-popover', inPopover);
-
-  if (typeof ResizeObserver !== 'undefined' && !card.dataset.hasResize) {
-    card.dataset.hasResize = 'true';
-    const ro = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        const width = entry.contentRect.width;
-        if (width > 0) {
-          card.classList.toggle('ag-compact', width < 520);
-        }
-      }
-    });
-    ro.observe(card);
-  }
+  applyResponsiveMode(card);
+  setupResponsiveObserver(card);
 
   card.innerHTML = `
     <div class="ag-card-header">
       <div class="ag-card-title-group">
-        <span class="ag-card-title ag-title-full">Connected Subscriptions & Multi-Account Quota</span>
-        <span class="ag-card-title ag-title-compact">Accounts Quota</span>
-        <span class="ag-card-badge ag-badge-full">${count === 0 ? 'No accounts connected' : `${averagePercent}% avg across ${count} account${count === 1 ? '' : 's'}`}</span>
-        <span class="ag-card-badge ag-badge-compact">${count === 0 ? '0' : `${averagePercent}% avg`}</span>
+        <span class="ag-card-title ag-title-full">${escapeHtml(t().cardTitleFull)}</span>
+        <span class="ag-card-title ag-title-compact">${escapeHtml(t().cardTitleCompact)}</span>
+        <span class="ag-card-badge ag-badge-full">${count === 0 ? escapeHtml(t().noAccounts) : escapeHtml(t().avgQuota(averagePercent, count))}</span>
+        <span class="ag-card-badge ag-badge-compact">${count === 0 ? '0' : escapeHtml(t().avgQuotaCompact(averagePercent))}</span>
       </div>
       <div class="ag-card-actions">
         ${currentSortCriteria.length > 0 ? `
-          <button class="ag-card-add-btn ag-btn-reset-sort" id="ag-settings-reset-sort" title="Reset all sorting and return to default account order">
+          <button class="ag-card-add-btn ag-btn-reset-sort" id="ag-settings-reset-sort" title="${escapeHtml(t().resetSortTitle)}">
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:3px;flex-shrink:0;">
               <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
               <path d="M3 3v5h5"/>
             </svg>
-            Reset
+            ${escapeHtml(t().resetSort)}
           </button>
         ` : ''}
-        <button class="ag-card-add-btn ag-btn-check-all ag-btn-admin" id="ag-settings-refresh-all" title="Switches through every connected account to check its quota — not the same as the official per-account refresh">Check All Accounts</button>
-        <button class="ag-card-add-btn ag-btn-export ag-btn-admin" id="ag-settings-export" title="Save all connected accounts, including their credentials, to a file you choose">Export</button>
-        <button class="ag-card-add-btn ag-btn-import ag-btn-admin" id="ag-settings-import" title="Load accounts from a previously exported file">Import</button>
+        <button class="ag-card-add-btn ag-btn-check-all ag-btn-admin" id="ag-settings-refresh-all" title="${escapeHtml(t().checkAllTitle)}">${escapeHtml(t().checkAll)}</button>
+        <button class="ag-card-add-btn ag-btn-export ag-btn-admin" id="ag-settings-export" title="${escapeHtml(t().exportTitle)}">${escapeHtml(t().export)}</button>
+        <button class="ag-card-add-btn ag-btn-import ag-btn-admin" id="ag-settings-import" title="${escapeHtml(t().importTitle)}">${escapeHtml(t().import)}</button>
       </div>
     </div>
     
     <div class="ag-card-grid">
       ${accounts.length === 0 ? `
         <div class="ag-switch-empty">
-          No accounts connected yet. Open the account menu in the bottom-left
-          corner and choose “Add new account” to connect one.
+          ${escapeHtml(t().emptyTip)}
           ${currentLoginEmail ? `
             <div style="margin-top:10px;">
-              <button class="ag-card-add-btn" id="ag-adopt-current-login">Use current login (${escapeHtml(currentLoginEmail)})</button>
+              <button class="ag-card-add-btn" id="ag-adopt-current-login">${escapeHtml(t().adoptLogin(maskEmail(currentLoginEmail, isMasked)))}</button>
             </div>
           ` : ''}
         </div>
       ` : `
         <div class="ag-grid-header">
-          <div class="ag-header-cell ag-header-sortable" data-sort-col="tier" title="Sort by Account Tier (Ultra → Pro → Free). Consecutive clicks prioritize and toggle direction.">
-            <span>Account / Tier</span>
+          <div class="ag-header-cell ag-header-sortable" data-sort-col="tier" title="${escapeHtml(t().sortTierTip)}">
+            <span>${escapeHtml(t().colAccountTier)}</span>
             ${renderSortIndicator('tier', currentSortCriteria)}
           </div>
-          <div class="ag-header-cell ag-col-center ag-header-sortable" data-sort-col="gemini" title="Sort by Gemini 5h Quota. Consecutive clicks prioritize and toggle direction.">
-            <span class="ag-col-label-full">Gemini</span>
-            <span class="ag-col-label-compact" title="Gemini Quota">G</span>
+          <div class="ag-header-cell ag-col-center ag-header-sortable" data-sort-col="gemini" title="${escapeHtml(t().sortGeminiTip)}">
+            <span class="ag-col-label-full">${escapeHtml(t().colGemini)}</span>
+            <span class="ag-col-label-compact" title="${escapeHtml(t().colGemini)}">G</span>
             ${renderSortIndicator('gemini', currentSortCriteria)}
           </div>
-          <div class="ag-header-cell ag-col-center ag-header-sortable" data-sort-col="claude" title="Sort by Claude & GPT 5h Quota. Consecutive clicks prioritize and toggle direction.">
-            <span class="ag-col-label-full">Claude & GPT</span>
-            <span class="ag-col-label-compact" title="Claude & GPT Quota">C</span>
+          <div class="ag-header-cell ag-col-center ag-header-sortable" data-sort-col="claude" title="${escapeHtml(t().sortClaudeTip)}">
+            <span class="ag-col-label-full">${escapeHtml(t().colClaude)}</span>
+            <span class="ag-col-label-compact" title="${escapeHtml(t().colClaude)}">C</span>
             ${renderSortIndicator('claude', currentSortCriteria)}
           </div>
-          <div class="ag-col-center">Status</div>
+          <div class="ag-col-center">${escapeHtml(t().colStatus)}</div>
           <div class="ag-col-action-header ag-btn-admin"></div>
         </div>
       `}
       ${accounts.map(acc => {
         const tier = simplifyTier(acc.plan);
         const tierClass = `tier-${tier.toLowerCase()}`;
+        const displayName = maskEmail(acc.name, isMasked);
+        const isZh = currentLang === 'zh';
         return `
-        <div class="ag-sub-box ${acc.isActive ? 'active' : ''}" data-account-id="${escapeHtml(acc.id)}" title="${acc.isActive ? 'Current active account' : 'Click to switch to this account'}">
+        <div class="ag-sub-box ${acc.isActive ? 'active' : ''}" data-account-id="${escapeHtml(acc.id)}" title="${acc.isActive ? escapeHtml(t().activeTitle) : escapeHtml(t().switchTitle)}">
           <div class="ag-sub-box-row">
             <div class="ag-sub-box-ident">
               <span class="ag-dot" style="background:${acc.color};"></span>
-              <span class="ag-sub-box-name" title="${escapeHtml(acc.name)}">${escapeHtml(acc.name)}</span>
+              <span class="ag-sub-box-name" title="${escapeHtml(acc.id)}">${escapeHtml(displayName)}</span>
               <span class="ag-tier-badge ${escapeHtml(tierClass)}">${escapeHtml(tier)}</span>
             </div>
 
-            <div class="ag-quota-col" title="Gemini&#10;外环(周配额): ${acc.geminiWeekly != null ? acc.geminiWeekly + '%' : '无'}&#10;内环(5h配额): ${acc.gemini5h != null ? acc.gemini5h + '%' : '无'}">
-              ${renderConcentricRing({ fiveHour: acc.gemini5h, weekly: acc.geminiWeekly, issue: acc.issue, label: 'Gemini' })}
+            <div class="ag-quota-col">
+              ${renderConcentricRing({ fiveHour: acc.gemini5h, weekly: acc.geminiWeekly, issue: acc.issue, label: 'Gemini', isZh })}
             </div>
 
-            <div class="ag-quota-col" title="Claude & GPT&#10;外环(周配额): ${acc.threePWeekly != null ? acc.threePWeekly + '%' : '无'}&#10;内环(5h配额): ${acc.threeP5h != null ? acc.threeP5h + '%' : '无'}">
-              ${renderConcentricRing({ fiveHour: acc.threeP5h, weekly: acc.threePWeekly, issue: acc.issue, label: 'Claude & GPT' })}
+            <div class="ag-quota-col">
+              ${renderConcentricRing({ fiveHour: acc.threeP5h, weekly: acc.threePWeekly, issue: acc.issue, label: 'Claude & GPT', isZh })}
             </div>
 
             <div class="ag-status-col">
               ${acc.isActive ? `
-                <span class="ag-active-badge">Active</span>
+                <span class="ag-active-badge">${escapeHtml(t().statusActive)}</span>
               ` : `
-                <span class="ag-switch-badge">Switch</span>
+                <span class="ag-switch-badge">${escapeHtml(t().statusSwitch)}</span>
               `}
             </div>
 
             <div class="ag-actions-col ag-btn-admin">
-              <button class="ag-remove-icon-btn" data-account-id="${escapeHtml(acc.id)}" title="Remove ${escapeHtml(acc.name)}" aria-label="Remove account">
+              <button class="ag-remove-icon-btn" data-account-id="${escapeHtml(acc.id)}" title="${escapeHtml(t().removeBtnTitle(displayName))}" aria-label="Remove account">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6"/>
                 </svg>
@@ -346,7 +377,7 @@ function renderSettingsCard(card: HTMLElement, force = false) {
           ${acc.issue ? `
           <div class="ag-sub-box-mask" style="display:flex;justify-content:space-between;align-items:center;">
             <span style="color:#ef4444;font-size:11px;">⚠️ ${escapeHtml(acc.issue)}</span>
-            <span style="font-size:11px;color:#9ca3af;">0% Remaining</span>
+            <span style="font-size:11px;color:#9ca3af;">${escapeHtml(t().issueRemaining)}</span>
           </div>
           ` : ''}
         </div>
@@ -354,6 +385,7 @@ function renderSettingsCard(card: HTMLElement, force = false) {
       }).join('')}
     </div>
   `;
+
 
   card.querySelectorAll('.ag-header-sortable').forEach(el => {
     el.addEventListener('click', (e) => {
@@ -394,18 +426,12 @@ function renderSettingsCard(card: HTMLElement, force = false) {
       const id = (e.currentTarget as HTMLElement).dataset.accountId;
       if (!id) return;
 
-      // Deliberately not described as "forget locally": remove deletes the
-      // saved credential copy, so getting this account back means a full
-      // interactive sign-in again, not a one-click reconnect. It still never
-      // revokes the Google session (see docs/decisions/remove-account-semantics.md).
-      const proceed = await showConfirm(
-        `Remove ${id}?\n\nThis deletes the saved credential for this account, so you can no longer switch to it — adding it back requires signing in with Google again. It does NOT sign the account out of Google or affect it anywhere else.`
-      );
+      const proceed = await showConfirm(t().confirmRemove(maskEmail(id, isMasked)));
       if (!proceed) return;
 
       const result = await AccountStore.removeAccount(id);
       if (!result.ok) {
-        await showAlert(`Could not remove ${id}: ${result.error}`);
+        await showAlert(`Could not remove ${maskEmail(id, isMasked)}: ${result.error}`);
       }
       renderSettingsCard(card);
     });
@@ -413,60 +439,44 @@ function renderSettingsCard(card: HTMLElement, force = false) {
 
   card.querySelector('#ag-adopt-current-login')?.addEventListener('click', async () => {
     if (!currentLoginEmail) return;
-    const proceed = await showConfirm(
-      `Save ${currentLoginEmail} as a connected account?\n\n` +
-      'This does not sign you out or change anything in Antigravity — it just ' +
-      'remembers this login so you can switch back to it later.'
-    );
+    const proceed = await showConfirm(t().confirmAdopt(maskEmail(currentLoginEmail, isMasked)));
     if (!proceed) return;
     const btn = card.querySelector('#ag-adopt-current-login') as HTMLElement;
-    if (btn) btn.textContent = 'Saving…';
+    if (btn) btn.textContent = t().saving;
     const result = await AccountStore.triggerConnect(currentLoginEmail);
     if (!result.ok) {
-      await showAlert(`Could not save ${currentLoginEmail}: ${result.error}`);
+      await showAlert(`Could not save ${maskEmail(currentLoginEmail, isMasked)}: ${result.error}`);
     }
     renderSettingsCard(card, true);
   });
 
   card.querySelector('#ag-settings-refresh-all')?.addEventListener('click', async () => {
-    const proceed = await showConfirm(
-      "Checking all accounts' quota will briefly switch your active Antigravity login through each connected account in turn (interrupting any in-progress response), then switch back. This is NOT the same as the lightweight refresh button on the official page. Continue?"
-    );
+    const proceed = await showConfirm(t().confirmRefreshAll);
     if (!proceed) return;
     const btn = card.querySelector('#ag-settings-refresh-all') as HTMLElement;
-    if (btn) btn.textContent = 'Checking accounts...';
+    if (btn) btn.textContent = t().checkingAccounts;
     await AccountStore.refreshAllQuotas();
-    // Forced: restores the button label even if no quota figure moved.
     renderSettingsCard(card, true);
   });
 
   card.querySelector('#ag-settings-export')?.addEventListener('click', async () => {
     if (accounts.length === 0) {
-      await showAlert('No accounts connected yet — nothing to export.');
+      await showAlert(t().noAccountsToExport);
       return;
     }
-    const proceed = await showConfirm(
-      `Export ${accounts.length} account${accounts.length === 1 ? '' : 's'} to a file?\n\n` +
-      'The file will contain your saved Google account credentials in a portable, ' +
-      'NOT encrypted form. Keep it somewhere private — anyone with this file can ' +
-      'sign in as these accounts.'
-    );
+    const proceed = await showConfirm(t().confirmExport(accounts.length));
     if (!proceed) return;
     const result = await AccountStore.exportAccounts();
     if (result.cancelled) return;
     if (!result.ok) {
       await showAlert(`Export failed: ${result.error}`);
     } else {
-      await showAlert(`Exported ${result.accounts} account${result.accounts === 1 ? '' : 's'} (${result.credentials} with credentials).`);
+      await showAlert(t().exportSuccess(result.accounts, result.credentials));
     }
   });
 
   card.querySelector('#ag-settings-import')?.addEventListener('click', async () => {
-    const proceed = await showConfirm(
-      'Import accounts from a file?\n\n' +
-      'Any account in the file that matches an ID you already have will be ' +
-      'OVERWRITTEN with the file\'s credentials. This cannot be undone. Continue?'
-    );
+    const proceed = await showConfirm(t().confirmImport);
     if (!proceed) return;
     const result = await AccountStore.importAccounts();
     if (result.cancelled) return;
@@ -475,7 +485,7 @@ function renderSettingsCard(card: HTMLElement, force = false) {
     } else {
       const imported = result.imported?.length ?? 0;
       const overwritten = result.overwritten?.length ?? 0;
-      await showAlert(`Imported ${imported} new account${imported === 1 ? '' : 's'}, overwrote ${overwritten}.`);
+      await showAlert(t().importSuccess(imported, overwritten));
     }
     renderSettingsCard(card, true);
   });

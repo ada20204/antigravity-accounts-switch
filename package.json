@@ -15,11 +15,6 @@
   "contributes": {
     "commands": [
       {
-        "command": "antigravityAccountsSwitch.switchAccount",
-        "title": "Switch Account",
-        "category": "Antigravity"
-      },
-      {
         "command": "antigravityAccountsSwitch.refreshQuota",
         "title": "Refresh All Quotas",
         "category": "Antigravity"
@@ -42,9 +37,22 @@
           "type": "boolean",
           "default": false,
           "description": "Show high-volume request/frontend log lines in the Antigravity Accounts Switch Output Channel (they always go to the log file regardless)."
+        },
+        "antigravityAccountsSwitch.maskEmails": {
+          "type": "boolean",
+          "default": true,
+          "description": "Desensitize and mask account email addresses in the UI and status bar (e.g. dev***er@example.com)."
+        },
+        "antigravityAccountsSwitch.language": {
+          "type": "string",
+          "enum": ["zh", "en"],
+          "default": "zh",
+          "description": "Display language for Antigravity Accounts Switch UI and notifications (zh: Chinese, en: English)."
         }
       }
     }
+
+
   },
   "scripts": {
     "dev": "vite",

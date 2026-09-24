@@ -1,6 +1,7 @@
 import { ProfileSyncAdapter } from '../adapters/profileSyncAdapter';
 import { showConfirm, showAlert } from '../ui/confirmDialog';
 import { showProgress } from '../ui/progressOverlay';
+import { t, getMaskEmails, maskEmail } from '../ui/i18n';
 
 /** Schema returned by GET /api/accounts — mirrors agent-hub-accounts overview v3 */
 interface DaemonQuotaBucket {
@@ -284,19 +285,21 @@ export class AccountStore {
   // Shared by every UI entry point so confirmation wording can't drift between
   // them. Does not skip on cached isActive — see docs/decisions/account-switch-semantics.md.
   public static async confirmAndSwitch(id: string): Promise<boolean> {
+    const isMasked = getMaskEmails();
+    const displayId = maskEmail(id, isMasked);
     const proceed = await showConfirm(
-      `即将切换至账号：\n${id}\n\n切换账号将重新连接 Antigravity 并中断进行中的生成任务。是否确认切换？`,
+      t().confirmSwitchMessage(displayId),
       {
-        title: '切换账号确认',
-        okText: '确认切换',
-        cancelText: '取消',
+        title: t().confirmSwitchTitle,
+        okText: t().confirmSwitchOk,
+        cancelText: t().cancel,
       }
     );
     if (!proceed) return false;
 
     const progress = showProgress(
-      `正在切换到 ${id}…`,
-      'Antigravity 正在应用新账号凭据并重新连接，请稍候几秒…'
+      t().switchingTo(displayId),
+      t().switchingDetail
     );
     let ok = false;
     try {
@@ -309,7 +312,7 @@ export class AccountStore {
       if (!ok) progress.close();
     }
     if (!ok) {
-      await showAlert('切换账号失败，当前仍保持原有账号登录状态。详情请查看 daemon 日志。', { title: '切换失败', okText: '我知道了' });
+      await showAlert(t().switchFailed, { title: t().switchFailedTitle, okText: t().switchFailedOk });
     }
     return ok;
   }
